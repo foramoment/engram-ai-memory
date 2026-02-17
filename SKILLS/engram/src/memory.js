@@ -40,10 +40,15 @@ import { embed, cosineSimilarity, vectorToBlob, blobToVector, getEmbeddingDim, r
  */
 
 /**
- * Add a new memory with auto-embedding.
+ * Add a new memory with auto-embedding, dedup, and merge-on-write.
+ *
+ * Before inserting, checks for:
+ * 1. Exact duplicate (same type + title) → skip, return existing ID
+ * 2. Semantic near-duplicate (cosine > mergeThreshold) → merge content into existing
+ *
  * @param {import("@libsql/client").Client} client
  * @param {MemoryInput} input
- * @returns {Promise<number>} The ID of the created memory
+ * @returns {Promise<{id: number, status: 'created' | 'duplicate' | 'merged', mergedInto?: number}>}
  */
 export async function addMemory(client, input) {
     const {
@@ -55,13 +60,73 @@ export async function addMemory(client, input) {
         sourceType = "manual",
         autoLink = true,
         autoLinkThreshold = 0.7,
+        mergeThreshold = 0.92,
     } = input;
+
+    // --- Check 1: Exact duplicate (same type + title) ---
+    const exactMatch = await client.execute({
+        sql: "SELECT id FROM memories WHERE type = ? AND title = ? AND archived = 0",
+        args: [type, title],
+    });
+    if (exactMatch.rows.length > 0) {
+        const existingId = Number(exactMatch.rows[0].id);
+        // Bump access count to signal re-encounter
+        await client.execute({
+            sql: "UPDATE memories SET access_count = access_count + 1, last_accessed_at = datetime('now') WHERE id = ?",
+            args: [existingId],
+        });
+        return { id: existingId, status: "duplicate" };
+    }
 
     // Generate embedding
     const embedding = await embed(`${title}\n${content}`);
     const embeddingBlob = vectorToBlob(embedding);
 
-    // Insert memory
+    // --- Check 2: Semantic near-duplicate (merge-on-write) ---
+    try {
+        const similar = await client.execute({
+            sql: `SELECT m.id, m.title, m.content, m.type, v.distance as dist
+                  FROM vector_top_k('memories_vec_idx', vector(?), 3) v
+                  JOIN memories m ON m.rowid = v.id
+                  WHERE m.archived = 0 AND m.type = ?`,
+            args: [embeddingBlob, type],
+        });
+
+        for (const row of similar.rows) {
+            const similarity = 1 - Number(row.dist);
+            if (similarity >= mergeThreshold) {
+                const existingId = Number(row.id);
+                const existingContent = String(row.content);
+                // Merge: append new content if it adds information
+                const mergedContent = existingContent.includes(content)
+                    ? existingContent  // new content is a subset — skip
+                    : `${existingContent}\n\n---\n${content}`;
+                // Re-embed merged content
+                const mergedTitle = title.length > String(row.title).length ? title : String(row.title);
+                const mergedEmbedding = await embed(`${mergedTitle}\n${mergedContent}`);
+                const mergedBlob = vectorToBlob(mergedEmbedding);
+                await client.execute({
+                    sql: `UPDATE memories SET
+                        content = ?, title = ?, content_embedding = vector(?),
+                        access_count = access_count + 1,
+                        strength = MIN(strength * 1.1, 1.0),
+                        last_accessed_at = datetime('now'),
+                        updated_at = datetime('now')
+                        WHERE id = ?`,
+                    args: [mergedContent, mergedTitle, mergedBlob, existingId],
+                });
+                // Apply tags to existing memory too
+                if (tags.length > 0) {
+                    await applyTags(client, existingId, tags);
+                }
+                return { id: existingId, status: "merged", mergedInto: existingId };
+            }
+        }
+    } catch {
+        // Vector index may not be ready — skip merge check
+    }
+
+    // --- No duplicate/merge: insert new memory ---
     const result = await client.execute({
         sql: `INSERT INTO memories (type, title, content, content_embedding, importance, source_conversation_id, source_type)
           VALUES (?, ?, ?, vector(?), ?, ?, ?)`,
@@ -70,28 +135,9 @@ export async function addMemory(client, input) {
 
     const memoryId = Number(result.lastInsertRowid);
 
-    // F025: Batch tag insertion via client.batch()
+    // Apply tags
     if (tags.length > 0) {
-        // First: upsert all tag names
-        const tagUpserts = tags.map((tag) => ({
-            sql: "INSERT OR IGNORE INTO tags (name) VALUES (?)",
-            args: [tag.toLowerCase().trim()],
-        }));
-        await client.batch(tagUpserts, "write");
-
-        // Then: fetch tag IDs and link to memory
-        for (const tag of tags) {
-            const normalized = tag.toLowerCase().trim();
-            const tagResult = await client.execute({
-                sql: "SELECT id FROM tags WHERE name = ?",
-                args: [normalized],
-            });
-            const tagId = Number(tagResult.rows[0].id);
-            await client.execute({
-                sql: "INSERT OR IGNORE INTO memory_tags (memory_id, tag_id) VALUES (?, ?)",
-                args: [memoryId, tagId],
-            });
-        }
+        await applyTags(client, memoryId, tags);
     }
 
     // Create explicit links
@@ -103,12 +149,39 @@ export async function addMemory(client, input) {
         await client.batch(linkBatch, "write");
     }
 
-    // F022: Auto-link — discover related memories by vector similarity
+    // Auto-link — discover related memories by vector similarity
     if (autoLink) {
         await autoLinkMemory(client, memoryId, embedding, autoLinkThreshold);
     }
 
-    return memoryId;
+    return { id: memoryId, status: "created" };
+}
+
+/**
+ * Apply tags to a memory (extracted for reuse in merge path).
+ * @param {import("@libsql/client").Client} client
+ * @param {number} memoryId
+ * @param {string[]} tags
+ */
+async function applyTags(client, memoryId, tags) {
+    const tagUpserts = tags.map((tag) => ({
+        sql: "INSERT OR IGNORE INTO tags (name) VALUES (?)",
+        args: [tag.toLowerCase().trim()],
+    }));
+    await client.batch(tagUpserts, "write");
+
+    for (const tag of tags) {
+        const normalized = tag.toLowerCase().trim();
+        const tagResult = await client.execute({
+            sql: "SELECT id FROM tags WHERE name = ?",
+            args: [normalized],
+        });
+        const tagId = Number(tagResult.rows[0].id);
+        await client.execute({
+            sql: "INSERT OR IGNORE INTO memory_tags (memory_id, tag_id) VALUES (?, ?)",
+            args: [memoryId, tagId],
+        });
+    }
 }
 
 /**

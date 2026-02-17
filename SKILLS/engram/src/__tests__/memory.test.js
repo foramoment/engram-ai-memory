@@ -67,17 +67,18 @@ describe("memory.js — CRUD operations", () => {
     });
 
     it("should add a memory and return its ID", async () => {
-        const id = await addMemory(client, {
+        const result = await addMemory(client, {
             type: "fact",
             title: "Test Fact",
             content: "LibSQL supports native vector search",
         });
-        assert.ok(typeof id === "number");
-        assert.equal(id, 1); // First memory in fresh table
+        assert.ok(typeof result.id === "number");
+        assert.equal(result.status, "created");
+        assert.equal(result.id, 1); // First memory in fresh table
     });
 
     it("should get a memory by ID", async () => {
-        const id = await addMemory(client, {
+        const { id } = await addMemory(client, {
             type: "reflex",
             title: "Rails Reflex",
             content: "Use bin/dev for Rails development",
@@ -101,7 +102,7 @@ describe("memory.js — CRUD operations", () => {
     });
 
     it("should add memory with tags", async () => {
-        const id = await addMemory(client, {
+        const { id } = await addMemory(client, {
             type: "episode",
             title: "Debugging Session",
             content: "Fixed CPU usage bug in Tauri app",
@@ -118,7 +119,7 @@ describe("memory.js — CRUD operations", () => {
     });
 
     it("should update memory content and re-embed", async () => {
-        const id = await addMemory(client, {
+        const { id } = await addMemory(client, {
             type: "fact",
             title: "Original",
             content: "Original content",
@@ -137,7 +138,7 @@ describe("memory.js — CRUD operations", () => {
     });
 
     it("should update memory importance without re-embedding", async () => {
-        const id = await addMemory(client, {
+        const { id } = await addMemory(client, {
             type: "fact",
             title: "Importance Test",
             content: "Test importance update",
@@ -155,7 +156,7 @@ describe("memory.js — CRUD operations", () => {
     });
 
     it("should delete a memory", async () => {
-        const id = await addMemory(client, {
+        const { id } = await addMemory(client, {
             type: "fact",
             title: "To Delete",
             content: "This will be deleted",
@@ -275,7 +276,7 @@ describe("memory.js — Tags", () => {
     });
 
     it("should add and retrieve tags", async () => {
-        const id = await addMemory(client, {
+        const { id } = await addMemory(client, {
             type: "fact", title: "Tagged Memory", content: "This has tags",
         });
         await addTag(client, id, "test-tag");
@@ -287,7 +288,7 @@ describe("memory.js — Tags", () => {
     });
 
     it("should remove a tag", async () => {
-        const id = await addMemory(client, {
+        const { id } = await addMemory(client, {
             type: "fact", title: "Tag Removal", content: "Test",
             tags: ["keep-me", "remove-me"],
         });
@@ -322,8 +323,8 @@ describe("memory.js — Knowledge Graph Links", () => {
     });
 
     it("should create a link between memories", async () => {
-        const id1 = await addMemory(client, { type: "fact", title: "Cause", content: "This caused something" });
-        const id2 = await addMemory(client, { type: "episode", title: "Effect", content: "This was the effect" });
+        const { id: id1 } = await addMemory(client, { type: "fact", title: "Cause", content: "This caused something" });
+        const { id: id2 } = await addMemory(client, { type: "episode", title: "Effect", content: "This was the effect" });
 
         await linkMemories(client, id1, id2, "caused_by");
 
@@ -335,8 +336,8 @@ describe("memory.js — Knowledge Graph Links", () => {
     });
 
     it("should show reverse direction for target", async () => {
-        const id1 = await addMemory(client, { type: "fact", title: "Source", content: "Source" });
-        const id2 = await addMemory(client, { type: "fact", title: "Target", content: "Target" });
+        const { id: id1 } = await addMemory(client, { type: "fact", title: "Source", content: "Source" });
+        const { id: id2 } = await addMemory(client, { type: "fact", title: "Target", content: "Target" });
 
         await linkMemories(client, id1, id2, "related_to");
 
@@ -352,8 +353,8 @@ describe("memory.js — Knowledge Graph Links", () => {
     });
 
     it("should add links during addMemory", async () => {
-        const id1 = await addMemory(client, { type: "fact", title: "First", content: "First memory" });
-        const id2 = await addMemory(client, {
+        const { id: id1 } = await addMemory(client, { type: "fact", title: "First", content: "First memory" });
+        const { id: id2 } = await addMemory(client, {
             type: "fact",
             title: "Second",
             content: "Links to first",
@@ -373,7 +374,7 @@ describe("memory.js — Access Logging", () => {
     });
 
     it("should log access and update memory stats", async () => {
-        const id = await addMemory(client, {
+        const { id } = await addMemory(client, {
             type: "fact", title: "Access Test", content: "Track access",
         });
 

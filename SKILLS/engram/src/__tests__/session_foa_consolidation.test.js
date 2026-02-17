@@ -78,7 +78,7 @@ describe("session.js — Session Management", () => {
 
     it("should get session context with accessed memories", async () => {
         await startSession(client, "sess-003", "Context Test");
-        const memId = await addMemory(client, { type: "fact", title: "Session Fact", content: "Relevant to session" });
+        const { id: memId } = await addMemory(client, { type: "fact", title: "Session Fact", content: "Relevant to session" });
         await logAccess(client, memId, "sess-003", "context query", 0.9);
 
         const ctx = await getSessionContext(client, "sess-003");

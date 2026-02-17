@@ -45,8 +45,14 @@ program
         if (opts.permanent && !tags.includes("permanent")) tags.push("permanent");
         const importance = parseFloat(opts.importance);
 
-        const id = await addMemory(client, { type, title, content, tags, importance, autoLink: opts.autoLink !== false });
-        console.log(`✅ Memory #${id} created [${type}] "${title}"`);
+        const result = await addMemory(client, { type, title, content, tags, importance, autoLink: opts.autoLink !== false });
+        if (result.status === "duplicate") {
+            console.log(`♻️  Memory #${result.id} already exists [${type}] "${title}" — bumped access count`);
+        } else if (result.status === "merged") {
+            console.log(`🔀 Memory #${result.id} merged [${type}] "${title}" — content appended to existing`);
+        } else {
+            console.log(`✅ Memory #${result.id} created [${type}] "${title}"`);
+        }
         if (tags.length) console.log(`   Tags: ${tags.join(", ")}`);
         if (opts.permanent) console.log(`   🔒 Permanent (exempt from decay/prune)`);
         await closeDb();
@@ -519,7 +525,7 @@ program
             if (m.permanent && !tags.includes("permanent")) tags.push("permanent");
 
             try {
-                const id = await addMemory(client, {
+                const result = await addMemory(client, {
                     type: m.type,
                     title: m.title,
                     content: m.content || m.title,
@@ -527,8 +533,9 @@ program
                     importance: m.importance ?? 0.5,
                     autoLink: m.autoLink !== false,
                 });
-                results.push({ id, title: m.title, type: m.type, ok: true });
-                console.log(`  ✅ #${id} [${m.type}] "${m.title}"`);
+                results.push({ id: result.id, title: m.title, type: m.type, ok: true, status: result.status });
+                const icon = result.status === "duplicate" ? "♻️" : result.status === "merged" ? "🔀" : "✅";
+                console.log(`  ${icon} #${result.id} [${m.type}] "${m.title}"${result.status !== "created" ? ` (${result.status})` : ""}`);
             } catch (e) {
                 results.push({ title: m.title, type: m.type, ok: false, error: e.message });
                 console.error(`  ❌ [${m.type}] "${m.title}" — ${e.message}`);
