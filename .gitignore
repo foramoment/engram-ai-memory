@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Database files
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# Model cache (downloaded on first run)
+.models/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log

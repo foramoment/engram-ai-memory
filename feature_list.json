@@ -1,0 +1,312 @@
+{
+    "project": {
+        "name": "Engram",
+        "description": "Cognitive memory system for AI agents — LibSQL + BGE-M3 + sleep consolidation",
+        "stack": "Node.js 20+, LibSQL, Transformers.js v4, Commander.js",
+        "created_at": "2026-02-17T02:57:00Z",
+        "last_updated": "2026-02-17T02:57:00Z"
+    },
+    "features": [
+        {
+            "id": "F001",
+            "category": "core",
+            "priority": "critical",
+            "description": "Project setup: package.json, directory structure, git init",
+            "steps": [
+                "package.json with all dependencies declared",
+                "Directory structure: src/, src/__tests__/, data/",
+                "npm install completes without errors",
+                "Git repository initialized with .gitignore"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F002",
+            "category": "core",
+            "priority": "critical",
+            "description": "Database initialization: LibSQL schema, migrations, FTS5, vector index",
+            "steps": [
+                "db.js creates/opens local .db file",
+                "All tables created: memories, memories_fts, tags, memory_tags, memory_links, sessions, access_log, system_meta",
+                "FTS5 virtual table synced via triggers",
+                "Vector index created (or graceful fallback)",
+                "Unit tests pass for db.js"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F003",
+            "category": "core",
+            "priority": "critical",
+            "description": "Embeddings: BGE-M3 via Transformers.js with WebGPU acceleration",
+            "steps": [
+                "embeddings.js loads Xenova/bge-m3 model",
+                "embed(text) returns Float32Array(1024)",
+                "WebGPU used when available, WASM fallback",
+                "Lazy initialization — model loaded on first call",
+                "Unit tests pass for embeddings.js"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F004",
+            "category": "core",
+            "priority": "critical",
+            "description": "Memory CRUD: add, get, update, delete memories with auto-embedding",
+            "steps": [
+                "addMemory(type, title, content, tags?, links?) creates record + embedding + FTS",
+                "getMemory(id) returns full record with tags and links",
+                "updateMemory(id, updates) re-embeds if content changed",
+                "deleteMemory(id) cascades to tags, links, access_log",
+                "Unit tests pass for all CRUD operations"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F005",
+            "category": "functional",
+            "priority": "critical",
+            "description": "Semantic search via vector_top_k with cosine distance",
+            "steps": [
+                "searchSemantic(query, k, filters?) embeds query then vector search",
+                "Results include distance score",
+                "Optional type filter works",
+                "Unit tests pass with real embeddings"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F006",
+            "category": "functional",
+            "priority": "critical",
+            "description": "FTS5 full-text search with ranking",
+            "steps": [
+                "searchFTS(query, filters?) uses FTS5 match + bm25 ranking",
+                "Results include relevance score",
+                "Optional type filter works",
+                "Unit tests pass"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F007",
+            "category": "functional",
+            "priority": "critical",
+            "description": "Hybrid search: RRF combining semantic + FTS results",
+            "steps": [
+                "searchHybrid(query, k, filters?) runs both searches",
+                "Reciprocal Rank Fusion combines results",
+                "Deduplication of results",
+                "Unit tests pass"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F008",
+            "category": "functional",
+            "priority": "high",
+            "description": "Knowledge graph: link memories with typed relations",
+            "steps": [
+                "linkMemories(sourceId, targetId, relation) creates link",
+                "getLinks(memoryId) returns all connected memories",
+                "findRelated(memoryId, k) uses graph + vector similarity",
+                "Relation types validated: related_to, caused_by, evolved_from, contradicts, supersedes",
+                "Unit tests pass"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F009",
+            "category": "functional",
+            "priority": "high",
+            "description": "Tags system: add/remove/query tags on memories",
+            "steps": [
+                "addTag(memoryId, tagName) creates tag + association",
+                "removeTag(memoryId, tagName) removes association",
+                "getMemoriesByTag(tagName) returns matching memories",
+                "getAllTags() returns tag list with counts",
+                "Unit tests pass"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F010",
+            "category": "functional",
+            "priority": "high",
+            "description": "Session management: start, end, context tracking",
+            "steps": [
+                "startSession(id) creates session record",
+                "endSession(id, summary) saves summary + embedding",
+                "getSessionContext(id) returns session memories + recent access log",
+                "listSessions() with date range filter",
+                "Unit tests pass"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F011",
+            "category": "functional",
+            "priority": "high",
+            "description": "Focus of Attention (FoA): dynamic context assembly",
+            "steps": [
+                "recall(query, options) performs hybrid search + session context",
+                "Results ranked by relevance × importance × strength × recency",
+                "Token budget control (--budget flag)",
+                "Output formatted as agent-ready context block",
+                "Unit tests pass"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F012",
+            "category": "functional",
+            "priority": "high",
+            "description": "Access logging: record every memory retrieval for decay calculations",
+            "steps": [
+                "Every search/get logs to access_log table",
+                "memory.access_count and memory.last_accessed_at updated",
+                "Bulk access stats query works",
+                "Unit tests pass"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F013",
+            "category": "functional",
+            "priority": "high",
+            "description": "Sleep Consolidation: decay, prune, merge, extract, boost",
+            "steps": [
+                "Decay: strength *= decay_factor^(days_since_last_access)",
+                "Prune: archive memories with strength < 0.05",
+                "Merge: find duplicates by cosine > 0.92, merge content",
+                "Extract: identify clusters (placeholder or LLM via LM Studio)",
+                "Boost: strengthen frequently accessed memories",
+                "last_consolidation_at tracked in system_meta",
+                "Unit tests pass for each step"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F014",
+            "category": "integration",
+            "priority": "high",
+            "description": "CLI: commander.js interface with all commands",
+            "steps": [
+                "engram add <type> <title> --content --tags works",
+                "engram search <query> --mode --type --limit works",
+                "engram recall <query> --budget works",
+                "engram link <id1> <id2> --relation works",
+                "engram stats outputs memory statistics",
+                "engram session start/end <id> works",
+                "engram sleep runs consolidation",
+                "engram export --format md/json works",
+                "All commands have --help",
+                "Unit tests pass for CLI argument parsing"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F015",
+            "category": "integration",
+            "priority": "high",
+            "description": "Migration: import markdown memories (reflexes, episodes, preferences, project_graph)",
+            "steps": [
+                "engram migrate --source <dir> parses all 4 markdown files",
+                "Each entry becomes a memory with correct type and tags",
+                "Embeddings generated for all imported memories",
+                "Links inferred where possible (e.g. same project)",
+                "Report shows import statistics",
+                "Unit tests pass for parsing logic"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F016",
+            "category": "integration",
+            "priority": "medium",
+            "description": "Skill integration: SKILL.md for Antigravity",
+            "steps": [
+                "skill/SKILL.md created with correct frontmatter",
+                "Auto-load: engram recall 'session context' at session start",
+                "During session: semantic search for complex queries",
+                "Save (/remember): engram add + engram link",
+                "Session end: engram session end + conditional sleep",
+                "Manual testing in Antigravity works"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F017",
+            "category": "functional",
+            "priority": "medium",
+            "description": "Memory stats and diagnostics",
+            "steps": [
+                "getStats() returns: total memories by type, total links, avg strength, last consolidation",
+                "getWeakest(n) returns memories with lowest strength",
+                "getDuplicateCandidates(threshold) returns near-duplicate pairs",
+                "Unit tests pass"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F018",
+            "category": "functional",
+            "priority": "medium",
+            "description": "Export: memories to markdown and JSON formats",
+            "steps": [
+                "exportMarkdown() generates structured .md files",
+                "exportJSON() generates complete JSON dump",
+                "Both formats include tags and links",
+                "Unit tests pass"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F019",
+            "category": "performance",
+            "priority": "medium",
+            "description": "WebGPU detection and performance logging",
+            "steps": [
+                "Detect WebGPU availability at startup",
+                "Log GPU adapter info if available",
+                "Report embedding speed (ms per text)",
+                "Fallback to WASM with warning",
+                "Unit tests pass for detection logic"
+            ],
+            "passes": false,
+            "notes": ""
+        },
+        {
+            "id": "F020",
+            "category": "functional",
+            "priority": "low",
+            "description": "Consolidation scheduling: auto-trigger after N days",
+            "steps": [
+                "Check last_consolidation_at on session start",
+                "If > N days, suggest running sleep",
+                "Optional auto-run flag",
+                "Unit tests pass"
+            ],
+            "passes": false,
+            "notes": ""
+        }
+    ]
+}

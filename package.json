@@ -1,0 +1,32 @@
+{
+    "name": "engram",
+    "version": "0.1.0",
+    "description": "Cognitive memory system for AI agents — LibSQL + BGE-M3 + sleep consolidation",
+    "type": "module",
+    "main": "src/index.js",
+    "bin": {
+        "engram": "src/cli.js"
+    },
+    "scripts": {
+        "test": "node --test src/__tests__/*.test.js",
+        "cli": "node src/cli.js"
+    },
+    "dependencies": {
+        "@libsql/client": "^0.14.0",
+        "@huggingface/transformers": "^3.4.0",
+        "commander": "^13.1.0"
+    },
+    "devDependencies": {},
+    "engines": {
+        "node": ">=20.0.0"
+    },
+    "keywords": [
+        "memory",
+        "ai",
+        "agent",
+        "embeddings",
+        "libsql",
+        "vector-search"
+    ],
+    "license": "MIT"
+}
