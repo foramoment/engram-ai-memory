@@ -158,6 +158,21 @@ engram tag add <id> <name>        # add tag
 engram tag remove <id> <name>     # remove tag
 engram tag list                   # all tags
 engram export [-f json|md] [-o file]  # export
+engram import --file backup.json     # restore from export (dedup + metadata)
+```
+
+### Backup & Restore
+
+```bash
+# Full backup
+engram export -o backup.json
+
+# Restore to same or different machine (dedup handles overlaps)
+engram import --file backup.json
+
+# Merge two databases
+engram export -o db_a.json            # on machine A
+engram import --file db_a.json        # on machine B
 ```
 
 ### Consolidation & Sessions

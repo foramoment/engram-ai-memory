@@ -164,6 +164,34 @@ engram ingest --file memories.json --remove-file
 
 ---
 
+### `import` — Restore from Backup
+
+Restore memories from an `export` JSON file. Preserves original metadata (strength, access_count, created_at, importance). Intelligent dedup prevents duplicates.
+
+```bash
+engram import --file backup.json                # import with dedup
+engram import --file backup.json --remove-file  # import + delete source
+```
+
+| Option              | Description                                                   |
+| ------------------- | ------------------------------------------------------------- |
+| `-f, --file <path>` | Path to export JSON file (**required**)                       |
+| `--remove-file`     | Delete source file after successful import (only with --file) |
+
+**Dedup behavior:**
+- **Exact match** (same type + title) → skip, keeps higher access_count/strength
+- **Semantic match** (cosine > 0.92, same type) → merge content into existing
+- **New** → insert with original metadata (created_at, strength, importance)
+
+**Link restoration:** Maps old IDs → new IDs and restores outgoing `memory_links`.
+
+**Use cases:**
+- Backup/restore: `export` → `import` cycle
+- Merging two databases that diverged
+- Migrating to a new machine
+
+---
+
 ## 🟡 Secondary Commands
 
 ### `search` — Raw Search

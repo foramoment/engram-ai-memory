@@ -13,6 +13,7 @@ import {
     linkMemories, getLinks,
     getStats, getWeakest, getDuplicateCandidates,
     exportMemories,
+    importMemories,
 } from "./memory.js";
 import { startSession, endSession, listSessions, startSessionWithConsolidationCheck } from "./session.js";
 import { recall, formatRecallContext } from "./foa.js";
@@ -601,6 +602,65 @@ program
 
         await closeDb();
     });
+
+// -- import (backup restore) --
+program
+    .command("import")
+    .description("Restore memories from an export JSON file (preserves metadata, dedup, restores links)")
+    .requiredOption("-f, --file <path>", "Path to export JSON file")
+    .option("--remove-file", "Delete the source file after successful import")
+    .action(async (opts) => {
+        const { readFileSync } = await import("node:fs");
+        let raw;
+        try {
+            raw = readFileSync(opts.file, "utf8");
+        } catch (/** @type {any} */ err) {
+            console.error(`Error: cannot read file: ${err?.message || String(err)}`);
+            process.exit(1);
+        }
+
+        let memories;
+        try {
+            memories = JSON.parse(raw);
+        } catch (/** @type {any} */ e) {
+            console.error(`Error: invalid JSON — ${e?.message || String(e)}`);
+            process.exit(1);
+        }
+
+        if (!Array.isArray(memories)) {
+            console.error("Error: expected a JSON array of memory objects.");
+            process.exit(1);
+        }
+
+        console.log(`📦 Importing ${memories.length} memories from ${opts.file}...\n`);
+
+        const { client } = await initDb();
+        const result = await importMemories(client, memories, {
+            onProgress: ({ index, title, status, id }) => {
+                const icon = status === "duplicate" ? "♻️" : status === "merged" ? "🔀" : status === "created" ? "✅" : "❌";
+                const label = status !== "created" ? ` (${status})` : "";
+                console.log(`  ${icon} #${id} "${title}"${label}`);
+            },
+        });
+
+        console.log(`\n📥 Import complete: ${result.created} created, ${result.duplicates} duplicates, ${result.merged} merged${result.failed ? `, ${result.failed} failed` : ""}`);
+
+        // Remove source file after successful import
+        if (opts.removeFile && result.failed === 0) {
+            const { unlinkSync } = await import("node:fs");
+            try {
+                unlinkSync(opts.file);
+                console.log(`🗑️  Removed source file: ${opts.file}`);
+            } catch (/** @type {any} */ err) {
+                console.error(`⚠️  Could not remove file: ${err?.message || String(err)}`);
+            }
+        } else if (opts.removeFile && result.failed > 0) {
+            console.error(`⚠️  --remove-file skipped: ${result.failed} memories failed (file preserved for retry)`);
+        }
+
+        await closeDb();
+    });
+
 // Force exit after all commands complete — transformers.js worker threads
 // keep the process alive otherwise, causing a hang after output is printed.
 program.hook("postAction", () => {

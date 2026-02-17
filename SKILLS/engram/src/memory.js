@@ -1117,6 +1117,185 @@ export async function exportMemories(client, format = "json") {
 }
 
 // ---------------------------------------------------------------------------
+// Import (backup restore with dedup)
+// ---------------------------------------------------------------------------
+
+/**
+ * Import memories from an export JSON, preserving metadata.
+ *
+ * For each memory in the export:
+ * 1. Exact duplicate (same type + title) → skip, optionally update metadata if richer
+ * 2. Semantic near-duplicate (cosine > mergeThreshold) → merge content
+ * 3. New → insert with original metadata (strength, access_count, created_at, importance)
+ *
+ * @param {import("@libsql/client").Client} client
+ * @param {Array<{id?: number, type: string, title: string, content: string, importance?: number, strength?: number, access_count?: number, created_at?: string, updated_at?: string, source_type?: string, source_conversation_id?: string, tags?: string[], links?: Array<{id: number, relation: string, direction: string}>}>} memories
+ * @param {object} [options]
+ * @param {number} [options.mergeThreshold] - Cosine similarity for merge (default 0.92)
+ * @param {(result: {index: number, title: string, status: string, id: number}) => void} [options.onProgress]
+ * @returns {Promise<{created: number, duplicates: number, merged: number, failed: number, idMap: Map<number, number>}>}
+ */
+export async function importMemories(client, memories, options = {}) {
+    const { mergeThreshold = 0.92, onProgress } = options;
+    let created = 0, duplicates = 0, merged = 0, failed = 0;
+    /** @type {Map<number, number>} old ID → new ID mapping for link restoration */
+    const idMap = new Map();
+
+    for (let i = 0; i < memories.length; i++) {
+        const mem = memories[i];
+        try {
+            // --- Check 1: Exact duplicate (same type + title) ---
+            const exactMatch = await client.execute({
+                sql: "SELECT id, access_count, strength FROM memories WHERE type = ? AND title = ? AND archived = 0",
+                args: [mem.type, mem.title],
+            });
+
+            if (exactMatch.rows.length > 0) {
+                const existingId = Number(exactMatch.rows[0].id);
+                const existingAccessCount = Number(exactMatch.rows[0].access_count);
+                const existingStrength = Number(exactMatch.rows[0].strength);
+
+                // Keep the better metadata (higher access_count, higher strength)
+                const newAccessCount = Math.max(existingAccessCount, mem.access_count || 0);
+                const newStrength = Math.max(existingStrength, mem.strength || 1.0);
+                if (newAccessCount > existingAccessCount || newStrength > existingStrength) {
+                    await client.execute({
+                        sql: "UPDATE memories SET access_count = ?, strength = ? WHERE id = ?",
+                        args: [newAccessCount, newStrength, existingId],
+                    });
+                }
+
+                // Apply any tags from the import
+                if (mem.tags && mem.tags.length > 0) {
+                    await applyTags(client, existingId, mem.tags);
+                }
+
+                if (mem.id != null) idMap.set(mem.id, existingId);
+                duplicates++;
+                onProgress?.({ index: i, title: mem.title, status: "duplicate", id: existingId });
+                continue;
+            }
+
+            // Generate embedding
+            const embedding = await embed(`${mem.title}\n${mem.content}`);
+            const embeddingBlob = vectorToBlob(embedding);
+
+            // --- Check 2: Semantic near-duplicate (merge) ---
+            let wasMerged = false;
+            try {
+                const similar = await client.execute({
+                    sql: `SELECT m.id, m.title, m.content, m.type, v.distance as dist
+                          FROM vector_top_k('memories_vec_idx', vector(?), 3) v
+                          JOIN memories m ON m.rowid = v.id
+                          WHERE m.archived = 0 AND m.type = ?`,
+                    args: [embeddingBlob, mem.type],
+                });
+
+                for (const row of similar.rows) {
+                    const similarity = 1 - Number(row.dist);
+                    if (similarity >= mergeThreshold) {
+                        const existingId = Number(row.id);
+                        const existingContent = String(row.content);
+                        const mergedContent = existingContent.includes(mem.content)
+                            ? existingContent
+                            : `${existingContent}\n\n---\n${mem.content}`;
+                        const mergedTitle = mem.title.length > String(row.title).length ? mem.title : String(row.title);
+                        const mergedEmbedding = await embed(`${mergedTitle}\n${mergedContent}`);
+                        const mergedBlob = vectorToBlob(mergedEmbedding);
+                        await client.execute({
+                            sql: `UPDATE memories SET
+                                content = ?, title = ?, content_embedding = vector(?),
+                                strength = MIN(COALESCE(?, strength) * 1.1, 1.0),
+                                updated_at = datetime('now')
+                                WHERE id = ?`,
+                            args: [mergedContent, mergedTitle, mergedBlob, mem.strength || null, existingId],
+                        });
+                        if (mem.tags && mem.tags.length > 0) {
+                            await applyTags(client, existingId, mem.tags);
+                        }
+                        if (mem.id != null) idMap.set(mem.id, existingId);
+                        merged++;
+                        wasMerged = true;
+                        onProgress?.({ index: i, title: mem.title, status: "merged", id: existingId });
+                        break;
+                    }
+                }
+            } catch (/** @type {any} */ err) {
+                trace("[engram] import merge check skipped:", err?.message || String(err));
+            }
+
+            if (wasMerged) continue;
+
+            // --- No duplicate/merge: insert with original metadata ---
+            const result = await client.execute({
+                sql: `INSERT INTO memories (type, title, content, content_embedding, importance, strength, access_count, last_accessed_at, created_at, updated_at, source_conversation_id, source_type)
+                      VALUES (?, ?, ?, vector(?), ?, ?, ?, ?, ?, ?, ?, ?)`,
+                args: [
+                    mem.type,
+                    mem.title,
+                    mem.content,
+                    embeddingBlob,
+                    mem.importance ?? 0.5,
+                    mem.strength ?? 1.0,
+                    mem.access_count ?? 0,
+                    null,
+                    mem.created_at || new Date().toISOString().replace("T", " ").substring(0, 19),
+                    mem.updated_at || new Date().toISOString().replace("T", " ").substring(0, 19),
+                    mem.source_conversation_id || null,
+                    mem.source_type || "import",
+                ],
+            });
+
+            const newId = Number(result.lastInsertRowid);
+            if (mem.id != null) idMap.set(mem.id, newId);
+
+            // Apply tags
+            if (mem.tags && mem.tags.length > 0) {
+                await applyTags(client, newId, mem.tags);
+            }
+
+            created++;
+            onProgress?.({ index: i, title: mem.title, status: "created", id: newId });
+        } catch (/** @type {any} */ err) {
+            failed++;
+            onProgress?.({ index: i, title: mem.title, status: "failed", id: -1 });
+            trace("[engram] import error for", mem.title, ":", err?.message || String(err));
+        }
+    }
+
+    // --- Restore links using idMap ---
+    let linksRestored = 0;
+    for (const mem of memories) {
+        if (!mem.links || !mem.id) continue;
+        const newSourceId = idMap.get(mem.id);
+        if (!newSourceId) continue;
+
+        for (const link of mem.links) {
+            // Only process outgoing links to avoid duplicates
+            if (link.direction !== "outgoing") continue;
+            const newTargetId = idMap.get(link.id);
+            if (!newTargetId) continue;
+
+            try {
+                await client.execute({
+                    sql: "INSERT OR IGNORE INTO memory_links (source_id, target_id, relation, strength) VALUES (?, ?, ?, ?)",
+                    args: [newSourceId, newTargetId, link.relation, 0.5],
+                });
+                linksRestored++;
+            } catch {
+                // Link restore is best-effort
+            }
+        }
+    }
+
+    if (linksRestored > 0) {
+        trace(`[engram] Restored ${linksRestored} links`);
+    }
+
+    return { created, duplicates, merged, failed, idMap };
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

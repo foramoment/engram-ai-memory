@@ -526,6 +526,24 @@
             ],
             "passes": true,
             "notes": "Scales from 70→5000+ memories without performance degradation. 83x fewer ops at 1000 memories."
+        },
+        {
+            "id": "F036",
+            "category": "functional",
+            "priority": "high",
+            "description": "Backup import: restore from export JSON with metadata preservation and dedup",
+            "steps": [
+                "engram import --file <export.json> reads full export format (with id, strength, access_count, created_at, links)",
+                "Exact dedup: same type+title → skip, keeps higher access_count/strength",
+                "Semantic merge: cosine > 0.92 with same type → merge content",
+                "New memories inserted with original metadata (created_at, strength, importance, source_type='import')",
+                "Link restoration: maps old IDs → new IDs and restores outgoing links",
+                "Progress callback shows ✅/♻️/🔀/❌ per memory",
+                "--remove-file flag for auto-cleanup after success",
+                "Paired with export for full backup/restore cycle"
+            ],
+            "passes": true,
+            "notes": "Completes export/import cycle. Used to merge two diverged databases with 92 memories — 70 deduped, 22 created, 0 conflicts."
         }
     ]
 }

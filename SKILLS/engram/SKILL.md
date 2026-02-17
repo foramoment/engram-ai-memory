@@ -171,6 +171,7 @@ engram tag add <id> <tag>                          # Add tag
 engram tag remove <id> <tag>                       # Remove tag
 engram mark <id>                                   # Toggle permanent
 engram export [-f md] [-o file.json]               # Export all
+engram import --file backup.json                   # Restore from export (dedup + metadata)
 ```
 
 ## Environment
