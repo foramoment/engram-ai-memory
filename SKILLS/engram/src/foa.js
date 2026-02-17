@@ -9,6 +9,8 @@
 import { searchHybrid } from "./memory.js";
 import { getSessionContext } from "./session.js";
 
+const trace = (...args) => process.env.ENGRAM_TRACE === "1" && process.stderr.write(args.join(" ") + "\n");
+
 /**
  * @typedef {Object} RecallOptions
  * @property {number} [k]             - Number of results (default 10)
@@ -72,6 +74,7 @@ export async function recall(client, query, options = {}) {
         }
 
         const compositeScore = relevance * importance * strength * recencyBonus;
+        trace(`[engram]   #${mem.id} [${mem.type}] "${mem.title}" — rel=${relevance.toFixed(4)} imp=${importance} str=${strength.toFixed(3)} rec=${recencyBonus.toFixed(2)} → composite=${compositeScore.toFixed(6)}`);
         return { ...mem, score: compositeScore };
     });
 
@@ -82,7 +85,7 @@ export async function recall(client, query, options = {}) {
     // Drop low-relevance noise; keep hop-linked memories (score=-1 sentinel)
     const MIN_SCORE = 0.001;
     let tokenCount = 0;
-    const memories = [];
+    let memories = [];
 
     for (const mem of scored) {
         if (mem.score >= 0 && mem.score < MIN_SCORE) continue; // noise gate
@@ -96,6 +99,28 @@ export async function recall(client, query, options = {}) {
             score: mem.score,
         });
         tokenCount += memTokens;
+    }
+
+    // Fallback: if noise gate killed ALL results but search found candidates,
+    // bypass the gate and return top-K by score. This ensures type-filtered
+    // queries like `recall -t reflex` always return results when they exist.
+    if (memories.length === 0 && scored.length > 0) {
+        trace(`[engram]   Noise gate (${MIN_SCORE}) filtered all ${scored.length} results — fallback to top-K`);
+        tokenCount = 0;
+        memories = []; // Reset memories for fallback
+        for (const mem of scored) {
+            if (mem.score < 0) continue; // skip sentinel-only
+            const memTokens = estimateTokens(`[${mem.type}] ${mem.title}\n${mem.content}`);
+            if (tokenCount + memTokens > budget && memories.length > 0) break;
+            memories.push({
+                id: mem.id,
+                type: mem.type,
+                title: mem.title,
+                content: mem.content,
+                score: mem.score,
+            });
+            tokenCount += memTokens;
+        }
     }
 
     // 4. Session context (if provided)
