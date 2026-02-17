@@ -322,6 +322,76 @@
             ],
             "passes": true,
             "notes": "BGE-reranker-base via Transformers.js, ~1200ms load from cache, ~35ms per pair"
+        },
+        {
+            "id": "F022",
+            "category": "functional",
+            "priority": "high",
+            "description": "Auto-link on write: discover and link related memories on insert",
+            "steps": [
+                "Auto searchSemantic after addMemory",
+                "Link if similarity > threshold",
+                "Configurable autoLink option",
+                "Unit tests"
+            ],
+            "passes": true,
+            "notes": "Auto-links similar memories on write with cosine threshold"
+        },
+        {
+            "id": "F023",
+            "category": "functional",
+            "priority": "high",
+            "description": "Multi-hop retrieval: follow graph links from search results",
+            "steps": [
+                "searchHybrid hops option",
+                "Deduplicate linked from originals",
+                "Return with hop metadata",
+                "Unit tests"
+            ],
+            "passes": true,
+            "notes": "Follows graph links 1-N hops from search results"
+        },
+        {
+            "id": "F024",
+            "category": "functional",
+            "priority": "medium",
+            "description": "Temporal filter: --since option for time-bounded search",
+            "steps": [
+                "Add since to search functions",
+                "Parse 1d/7d/30d/1h strings",
+                "CLI --since flag",
+                "Unit tests"
+            ],
+            "passes": true,
+            "notes": "parseSince supports h/d/w/m; filters in semantic/FTS/hybrid"
+        },
+        {
+            "id": "F025",
+            "category": "performance",
+            "priority": "medium",
+            "description": "Parallel query batching via LibSQL batch()",
+            "steps": [
+                "Batch tag insertion in addMemory",
+                "Batch link creation in auto-link",
+                "Batch stats queries",
+                "Unit tests"
+            ],
+            "passes": true,
+            "notes": "client.batch() for tags and links in addMemory"
+        },
+        {
+            "id": "F026",
+            "category": "functional",
+            "priority": "high",
+            "description": "Permanent memories: skip decay/prune for memories tagged permanent",
+            "steps": [
+                "Modify stepDecay to exclude permanent",
+                "Modify stepPrune to exclude permanent",
+                "CLI mark command",
+                "Unit tests"
+            ],
+            "passes": true,
+            "notes": "Permanent tag excludes from stepDecay and stepPrune"
         }
     ]
 }

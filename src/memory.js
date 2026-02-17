@@ -15,6 +15,8 @@ import { embed, cosineSimilarity, vectorToBlob, blobToVector, getEmbeddingDim, r
  * @property {Array<{targetId: number, relation: string}>} [links] - Links to create
  * @property {string} [sourceConversationId]
  * @property {'manual' | 'auto' | 'migration'} [sourceType]
+ * @property {boolean} [autoLink]           - Auto-discover and link related memories (default false)
+ * @property {number} [autoLinkThreshold]   - Cosine similarity threshold for auto-linking (default 0.7)
  */
 
 /**
@@ -51,6 +53,8 @@ export async function addMemory(client, input) {
         links = [],
         sourceConversationId = null,
         sourceType = "manual",
+        autoLink = false,
+        autoLinkThreshold = 0.7,
     } = input;
 
     // Generate embedding
@@ -66,21 +70,93 @@ export async function addMemory(client, input) {
 
     const memoryId = Number(result.lastInsertRowid);
 
-    // Add tags
+    // F025: Batch tag insertion via client.batch()
     if (tags.length > 0) {
+        // First: upsert all tag names
+        const tagUpserts = tags.map((tag) => ({
+            sql: "INSERT OR IGNORE INTO tags (name) VALUES (?)",
+            args: [tag.toLowerCase().trim()],
+        }));
+        await client.batch(tagUpserts, "write");
+
+        // Then: fetch tag IDs and link to memory
         for (const tag of tags) {
-            await addTag(client, memoryId, tag);
+            const normalized = tag.toLowerCase().trim();
+            const tagResult = await client.execute({
+                sql: "SELECT id FROM tags WHERE name = ?",
+                args: [normalized],
+            });
+            const tagId = Number(tagResult.rows[0].id);
+            await client.execute({
+                sql: "INSERT OR IGNORE INTO memory_tags (memory_id, tag_id) VALUES (?, ?)",
+                args: [memoryId, tagId],
+            });
         }
     }
 
-    // Create links
+    // Create explicit links
     if (links.length > 0) {
-        for (const link of links) {
-            await linkMemories(client, memoryId, link.targetId, link.relation);
-        }
+        const linkBatch = links.map((link) => ({
+            sql: "INSERT OR REPLACE INTO memory_links (source_id, target_id, relation, strength) VALUES (?, ?, ?, ?)",
+            args: [memoryId, link.targetId, link.relation, 0.5],
+        }));
+        await client.batch(linkBatch, "write");
+    }
+
+    // F022: Auto-link — discover related memories by vector similarity
+    if (autoLink) {
+        await autoLinkMemory(client, memoryId, embedding, autoLinkThreshold);
     }
 
     return memoryId;
+}
+
+/**
+ * Auto-discover and link related memories by cosine similarity.
+ * @param {import("@libsql/client").Client} client
+ * @param {number} memoryId - The newly created memory ID
+ * @param {Float32Array} embedding - The memory's embedding vector
+ * @param {number} threshold - Cosine similarity threshold (default 0.7)
+ * @param {number} [maxLinks] - Max auto-links to create (default 3)
+ * @returns {Promise<Array<{targetId: number, similarity: number}>>}
+ */
+export async function autoLinkMemory(client, memoryId, embedding, threshold = 0.7, maxLinks = 3) {
+    const queryBlob = vectorToBlob(embedding);
+
+    // Find similar memories (excluding self)
+    try {
+        const result = await client.execute({
+            sql: `SELECT m.id, m.title, v.distance as dist
+                  FROM vector_top_k('memories_vec_idx', vector(?), ?) v
+                  JOIN memories m ON m.rowid = v.id
+                  WHERE m.id != ? AND m.archived = 0`,
+            args: [queryBlob, maxLinks + 5, memoryId],
+        });
+
+        const linked = [];
+        const linkBatch = [];
+
+        for (const row of result.rows) {
+            // Distance → cosine similarity (distance is 1 - cosine for normalized vectors)
+            const similarity = 1 - Number(row.dist);
+            if (similarity >= threshold && linked.length < maxLinks) {
+                linkBatch.push({
+                    sql: "INSERT OR IGNORE INTO memory_links (source_id, target_id, relation, strength) VALUES (?, ?, 'related_to', ?)",
+                    args: [memoryId, Number(row.id), Math.round(similarity * 100) / 100],
+                });
+                linked.push({ targetId: Number(row.id), similarity });
+            }
+        }
+
+        if (linkBatch.length > 0) {
+            await client.batch(linkBatch, "write");
+        }
+
+        return linked;
+    } catch {
+        // Vector index may not be ready — skip auto-linking
+        return [];
+    }
 }
 
 /**
@@ -224,10 +300,11 @@ export async function deleteMemory(client, id) {
  * @param {number} [options.k] - Number of results (default 10)
  * @param {string} [options.type] - Filter by memory type
  * @param {boolean} [options.includeArchived] - Include archived memories
+ * @param {string} [options.since] - Time filter: '1h', '1d', '7d', '30d' (default: no filter)
  * @returns {Promise<Memory[]>}
  */
 export async function searchSemantic(client, query, options = {}) {
-    const { k = 10, type, includeArchived = false } = options;
+    const { k = 10, type, includeArchived = false, since } = options;
     const queryEmbedding = await embed(query);
     const queryBlob = vectorToBlob(queryEmbedding);
 
@@ -249,6 +326,10 @@ export async function searchSemantic(client, query, options = {}) {
         if (type) {
             sql += " AND m.type = ?";
             args.push(type);
+        }
+        if (since) {
+            sql += " AND m.created_at >= ?";
+            args.push(parseSince(since));
         }
         sql += " LIMIT ?";
         args.push(k);
@@ -305,10 +386,11 @@ async function searchSemanticBruteForce(client, queryEmbedding, options = {}) {
  * @param {object} [options]
  * @param {number} [options.k] - Number of results (default 10)
  * @param {string} [options.type] - Filter by memory type
+ * @param {string} [options.since] - Time filter: '1h', '1d', '7d', '30d' (default: no filter)
  * @returns {Promise<Memory[]>}
  */
 export async function searchFTS(client, query, options = {}) {
-    const { k = 10, type } = options;
+    const { k = 10, type, since } = options;
 
     let sql = `SELECT m.id, m.type, m.title, m.content, m.importance, m.strength, 
              m.access_count, m.last_accessed_at, m.created_at, m.updated_at,
@@ -323,6 +405,10 @@ export async function searchFTS(client, query, options = {}) {
     if (type) {
         sql += " AND m.type = ?";
         args.push(type);
+    }
+    if (since) {
+        sql += " AND m.created_at >= ?";
+        args.push(parseSince(since));
     }
 
     sql += " ORDER BY bm25(memories_fts) LIMIT ?";
@@ -341,17 +427,19 @@ export async function searchFTS(client, query, options = {}) {
  * @param {string} [options.type] - Filter by memory type
  * @param {number} [options.rrf_k] - RRF parameter (default 60)
  * @param {boolean} [options.rerank] - Use cross-encoder reranker for final scoring (default false)
+ * @param {string} [options.since] - Time filter: '1h', '1d', '7d', '30d' (default: no filter)
+ * @param {number} [options.hops] - Follow graph links N hops deep (default 0 = no hops)
  * @returns {Promise<Memory[]>}
  */
 export async function searchHybrid(client, query, options = {}) {
-    const { k = 10, type, rrf_k = 60, rerank: useRerank = false } = options;
+    const { k = 10, type, rrf_k = 60, rerank: useRerank = false, since, hops = 0 } = options;
     // Wide retrieval funnel — always fetch at least 20 candidates
     const fetchK = Math.max(k * 3, 20);
 
     // Run both searches in parallel
     const [semanticResults, ftsResults] = await Promise.all([
-        searchSemantic(client, query, { k: fetchK, type }),
-        searchFTS(client, query, { k: fetchK, type }).catch(() => []),
+        searchSemantic(client, query, { k: fetchK, type, since }),
+        searchFTS(client, query, { k: fetchK, type, since }).catch(() => []),
     ]);
 
     // Build RRF scores with importance/strength weighting
@@ -398,10 +486,58 @@ export async function searchHybrid(client, query, options = {}) {
     }
 
     // Without reranking: just take top-k
-    return sorted.slice(0, k).map((item) => {
+    const finalResults = sorted.slice(0, k).map((item) => {
         item.memory.score = item.score;
         return item.memory;
     });
+
+    // F023: Multi-hop retrieval — follow graph links from results
+    if (hops > 0 && finalResults.length > 0) {
+        return await expandWithHops(client, finalResults, hops, k);
+    }
+
+    return finalResults;
+}
+
+/**
+ * F023: Expand search results by following graph links (multi-hop).
+ * @param {import("@libsql/client").Client} client
+ * @param {Memory[]} results - Initial search results
+ * @param {number} hops - Number of link hops to follow
+ * @param {number} maxTotal - Max total results to return
+ * @returns {Promise<Memory[]>}
+ */
+async function expandWithHops(client, results, hops, maxTotal) {
+    const seen = new Set(results.map((m) => m.id));
+    /** @type {Memory[]} */
+    const expanded = [...results];
+
+    let currentLayer = results;
+    for (let hop = 0; hop < hops && expanded.length < maxTotal; hop++) {
+        /** @type {Memory[]} */
+        const nextLayer = [];
+
+        // Batch: get all linked IDs for current layer
+        for (const mem of currentLayer) {
+            const links = await getLinks(client, mem.id);
+            for (const link of links) {
+                if (!seen.has(link.id) && expanded.length + nextLayer.length < maxTotal) {
+                    seen.add(link.id);
+                    const linked = await getMemory(client, link.id);
+                    if (linked && !linked.archived) {
+                        // Mark as hop result with metadata
+                        linked.score = -1; // Sentinel: linked, not scored
+                        nextLayer.push(linked);
+                    }
+                }
+            }
+        }
+
+        expanded.push(...nextLayer);
+        currentLayer = nextLayer;
+    }
+
+    return expanded;
 }
 
 // ---------------------------------------------------------------------------
@@ -765,6 +901,38 @@ function rowToMemory(row) {
         source_conversation_id: row.source_conversation_id ? String(row.source_conversation_id) : null,
         source_type: String(row.source_type),
         archived: Number(row.archived),
-        score: row.score !== undefined ? Number(row.score) : undefined,
     };
+}
+
+/**
+ * F024: Parse a relative time string into an ISO datetime.
+ * @param {string} since - Relative time: '1h', '6h', '1d', '7d', '30d'
+ * @returns {string} ISO 8601 datetime string
+ */
+export function parseSince(since) {
+    const match = since.match(/^(\d+)(h|d|w|m)$/i);
+    if (!match) {
+        throw new Error(`Invalid since format: ${since}. Use: 1h, 6h, 1d, 7d, 30d, 1w, 1m`);
+    }
+
+    const amount = parseInt(match[1]);
+    const unit = match[2].toLowerCase();
+
+    const now = new Date();
+    switch (unit) {
+        case "h":
+            now.setHours(now.getHours() - amount);
+            break;
+        case "d":
+            now.setDate(now.getDate() - amount);
+            break;
+        case "w":
+            now.setDate(now.getDate() - amount * 7);
+            break;
+        case "m":
+            now.setMonth(now.getMonth() - amount);
+            break;
+    }
+
+    return now.toISOString().replace("T", " ").substring(0, 19);
 }

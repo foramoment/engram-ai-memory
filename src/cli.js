@@ -36,13 +36,14 @@ program
     .option("-c, --content <text>", "Memory content (or pipe via stdin)")
     .option("-t, --tags <tags>", "Comma-separated tags")
     .option("-i, --importance <n>", "Importance 0.0-1.0", "0.5")
+    .option("--auto-link", "Auto-discover and link related memories")
     .action(async (type, title, opts) => {
         const { client } = await initDb();
         const content = opts.content || title;
         const tags = opts.tags ? opts.tags.split(",").map((t) => t.trim()) : [];
         const importance = parseFloat(opts.importance);
 
-        const id = await addMemory(client, { type, title, content, tags, importance });
+        const id = await addMemory(client, { type, title, content, tags, importance, autoLink: opts.autoLink || false });
         console.log(`✅ Memory #${id} created [${type}] "${title}"`);
         if (tags.length) console.log(`   Tags: ${tags.join(", ")}`);
         await closeDb();
@@ -57,21 +58,25 @@ program
     .option("-t, --type <type>", "Filter by memory type")
     .option("-k, --limit <n>", "Number of results", "10")
     .option("--rerank", "Re-score results with cross-encoder reranker")
+    .option("--since <period>", "Time filter: 1h, 1d, 7d, 30d")
+    .option("--hops <n>", "Follow graph links N hops deep", "0")
     .action(async (query, opts) => {
         const { client } = await initDb();
         const k = parseInt(opts.limit);
         const type = opts.type;
+        const since = opts.since;
+        const hops = parseInt(opts.hops);
         let results;
 
         switch (opts.mode) {
             case "semantic":
-                results = await searchSemantic(client, query, { k, type });
+                results = await searchSemantic(client, query, { k, type, since });
                 break;
             case "fts":
-                results = await searchFTS(client, query, { k, type });
+                results = await searchFTS(client, query, { k, type, since });
                 break;
             default:
-                results = await searchHybrid(client, query, { k, type, rerank: opts.rerank || false });
+                results = await searchHybrid(client, query, { k, type, rerank: opts.rerank || false, since, hops });
         }
 
         if (results.length === 0) {
@@ -79,7 +84,9 @@ program
         } else {
             console.log(`\n🔍 ${results.length} results (${opts.mode} search):\n`);
             for (const mem of results) {
-                const score = mem.score !== undefined ? ` (score: ${mem.score.toFixed(4)})` : "";
+                const score = mem.score !== undefined && mem.score >= 0
+                    ? ` (score: ${mem.score.toFixed(4)})`
+                    : mem.score === -1 ? " (linked)" : "";
                 console.log(`  #${mem.id} [${mem.type}] ${mem.title}${score}`);
                 console.log(`    ${mem.content.substring(0, 120)}${mem.content.length > 120 ? "..." : ""}`);
                 console.log();
@@ -133,6 +140,26 @@ program
         const { client } = await initDb();
         await linkMemories(client, parseInt(sourceId), parseInt(targetId), opts.relation);
         console.log(`🔗 Linked #${sourceId} → #${targetId} (${opts.relation})`);
+        await closeDb();
+    });
+
+// -- mark --
+program
+    .command("mark")
+    .description("Toggle permanent flag on a memory (exempt from decay/prune)")
+    .argument("<id>", "Memory ID")
+    .option("--remove", "Remove permanent mark")
+    .action(async (id, opts) => {
+        const { client } = await initDb();
+        const memId = parseInt(id);
+
+        if (opts.remove) {
+            await removeTag(client, memId, "permanent");
+            console.log(`🔓 Memory #${memId} is no longer permanent`);
+        } else {
+            await addTag(client, memId, "permanent");
+            console.log(`🔒 Memory #${memId} marked as permanent (exempt from decay/prune)`);
+        }
         await closeDb();
     });
 

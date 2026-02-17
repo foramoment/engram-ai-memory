@@ -101,9 +101,15 @@ export async function runConsolidation(client, options = {}) {
  * @returns {Promise<number>}
  */
 async function stepDecay(client, decayRate, dryRun) {
+    // F026: Exclude memories tagged 'permanent' from decay
+    const permanentExclude = `AND m.id NOT IN (
+        SELECT mt.memory_id FROM memory_tags mt
+        JOIN tags t ON t.id = mt.tag_id WHERE t.name = 'permanent'
+    )`;
+
     if (dryRun) {
         const count = await client.execute(
-            "SELECT COUNT(*) as n FROM memories WHERE archived = 0 AND last_accessed_at IS NOT NULL"
+            `SELECT COUNT(*) as n FROM memories m WHERE m.archived = 0 AND m.last_accessed_at IS NOT NULL ${permanentExclude}`
         );
         return Number(count.rows[0].n);
     }
@@ -113,7 +119,11 @@ async function stepDecay(client, decayRate, dryRun) {
         sql: `UPDATE memories SET 
           strength = strength * POWER(?, MAX(1, julianday('now') - julianday(COALESCE(last_accessed_at, created_at)))),
           updated_at = datetime('now')
-          WHERE archived = 0 AND strength > 0`,
+          WHERE archived = 0 AND strength > 0
+          AND id NOT IN (
+              SELECT mt.memory_id FROM memory_tags mt
+              JOIN tags t ON t.id = mt.tag_id WHERE t.name = 'permanent'
+          )`,
         args: [decayRate],
     });
 
@@ -129,16 +139,22 @@ async function stepDecay(client, decayRate, dryRun) {
  * @returns {Promise<number>}
  */
 async function stepPrune(client, threshold, dryRun) {
+    // F026: Exclude memories tagged 'permanent' from pruning
+    const permanentExclude = `AND id NOT IN (
+        SELECT mt.memory_id FROM memory_tags mt
+        JOIN tags t ON t.id = mt.tag_id WHERE t.name = 'permanent'
+    )`;
+
     if (dryRun) {
         const count = await client.execute({
-            sql: "SELECT COUNT(*) as n FROM memories WHERE archived = 0 AND strength < ?",
+            sql: `SELECT COUNT(*) as n FROM memories WHERE archived = 0 AND strength < ? ${permanentExclude}`,
             args: [threshold],
         });
         return Number(count.rows[0].n);
     }
 
     const result = await client.execute({
-        sql: "UPDATE memories SET archived = 1, updated_at = datetime('now') WHERE archived = 0 AND strength < ?",
+        sql: `UPDATE memories SET archived = 1, updated_at = datetime('now') WHERE archived = 0 AND strength < ? ${permanentExclude}`,
         args: [threshold],
     });
 
