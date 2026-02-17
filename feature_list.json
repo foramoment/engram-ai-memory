@@ -4,7 +4,7 @@
         "description": "Cognitive memory system for AI agents — LibSQL + BGE-M3 + sleep consolidation",
         "stack": "Node.js 20+, LibSQL, Transformers.js v4, Commander.js",
         "created_at": "2026-02-17T02:57:00Z",
-        "last_updated": "2026-02-17T04:15:00Z"
+        "last_updated": "2026-02-17T04:50:00Z"
     },
     "features": [
         {
@@ -307,6 +307,21 @@
             ],
             "passes": true,
             "notes": ""
+        },
+        {
+            "id": "F021",
+            "category": "performance",
+            "priority": "high",
+            "description": "Cross-encoder reranker: re-score retrieval candidates with BGE-reranker for higher relevance",
+            "steps": [
+                "Load BGE-reranker ONNX model via Transformers.js (lazy, like embeddings)",
+                "rerank(query, documents) scores each (query, doc) pair via cross-encoder",
+                "Integrate reranker into searchHybrid as optional post-retrieval step",
+                "Wide funnel (top-20+) → reranker → top-k final results",
+                "Unit tests pass with real model inference"
+            ],
+            "passes": true,
+            "notes": "BGE-reranker-base via Transformers.js, ~1200ms load from cache, ~35ms per pair"
         }
     ]
 }

@@ -56,6 +56,7 @@ program
     .option("-m, --mode <mode>", "Search mode: hybrid | semantic | fts", "hybrid")
     .option("-t, --type <type>", "Filter by memory type")
     .option("-k, --limit <n>", "Number of results", "10")
+    .option("--rerank", "Re-score results with cross-encoder reranker")
     .action(async (query, opts) => {
         const { client } = await initDb();
         const k = parseInt(opts.limit);
@@ -70,7 +71,7 @@ program
                 results = await searchFTS(client, query, { k, type });
                 break;
             default:
-                results = await searchHybrid(client, query, { k, type });
+                results = await searchHybrid(client, query, { k, type, rerank: opts.rerank || false });
         }
 
         if (results.length === 0) {

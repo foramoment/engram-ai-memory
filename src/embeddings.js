@@ -191,3 +191,113 @@ export function blobToVector(blob) {
     }
     return new Float32Array(blob);
 }
+
+// ---------------------------------------------------------------------------
+// Cross-encoder Reranker — BGE-reranker-base via Transformers.js
+// ---------------------------------------------------------------------------
+
+const RERANKER_MODEL_ID = "Xenova/bge-reranker-base";
+
+/** @type {any} */
+let _rerankerTokenizer = null;
+
+/** @type {any} */
+let _rerankerModel = null;
+
+/** @type {boolean} */
+let _rerankerInitialized = false;
+
+/**
+ * Initialize the cross-encoder reranker (lazy — called on first rerank()).
+ * @returns {Promise<void>}
+ */
+export async function initReranker() {
+    if (_rerankerInitialized && _rerankerModel) return;
+
+    const { AutoTokenizer, AutoModelForSequenceClassification } = await import("@huggingface/transformers");
+
+    console.log(`[engram] Loading reranker model: ${RERANKER_MODEL_ID}`);
+    const startTime = Date.now();
+
+    _rerankerTokenizer = await AutoTokenizer.from_pretrained(RERANKER_MODEL_ID);
+    _rerankerModel = await AutoModelForSequenceClassification.from_pretrained(RERANKER_MODEL_ID);
+
+    const elapsed = Date.now() - startTime;
+    console.log(`[engram] Reranker loaded in ${elapsed}ms`);
+    _rerankerInitialized = true;
+}
+
+/**
+ * @returns {boolean}
+ */
+export function isRerankerInitialized() {
+    return _rerankerInitialized;
+}
+
+/**
+ * Reset reranker (for testing).
+ */
+export function resetReranker() {
+    _rerankerModel = null;
+    _rerankerTokenizer = null;
+    _rerankerInitialized = false;
+}
+
+/**
+ * @typedef {Object} RerankResult
+ * @property {number} index - Original index in the input array
+ * @property {number} score - Relevance score (0-1, sigmoid-normalized logit)
+ * @property {string} text  - The document text
+ */
+
+/**
+ * Re-rank documents by cross-encoder relevance to a query.
+ *
+ * Cross-encoders process (query, document) pairs jointly via attention,
+ * making them much more accurate than bi-encoders for relevance scoring.
+ *
+ * @param {string} query
+ * @param {string[]} documents - Texts to re-rank
+ * @param {object} [options]
+ * @param {number} [options.topK] - Return only top-K results (default: all)
+ * @returns {Promise<RerankResult[]>} Sorted by score descending
+ */
+export async function rerank(query, documents, options = {}) {
+    if (!_rerankerInitialized || !_rerankerModel) {
+        await initReranker();
+    }
+
+    const { topK } = options;
+
+    /** @type {RerankResult[]} */
+    const results = [];
+
+    // Score each (query, document) pair
+    for (let i = 0; i < documents.length; i++) {
+        const inputs = _rerankerTokenizer([query], {
+            text_pair: [documents[i]],
+            padding: true,
+            truncation: true,
+        });
+
+        const output = await _rerankerModel(inputs);
+
+        // output.logits is a Tensor with shape [1, 1]
+        // Apply sigmoid to get a 0-1 relevance score
+        const logit = Number(output.logits.data[0]);
+        const score = 1 / (1 + Math.exp(-logit)); // sigmoid
+
+        results.push({ index: i, score, text: documents[i] });
+    }
+
+    // Sort by score descending
+    results.sort((a, b) => b.score - a.score);
+
+    // Apply topK if specified
+    if (topK && topK > 0) {
+        return results.slice(0, topK);
+    }
+
+    return results;
+}
+

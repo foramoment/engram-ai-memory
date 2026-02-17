@@ -3,7 +3,7 @@
  * Memory operations — CRUD, semantic/FTS/hybrid search, linking, tags.
  */
 
-import { embed, cosineSimilarity, vectorToBlob, blobToVector, getEmbeddingDim } from "./embeddings.js";
+import { embed, cosineSimilarity, vectorToBlob, blobToVector, getEmbeddingDim, rerank } from "./embeddings.js";
 
 /**
  * @typedef {Object} MemoryInput
@@ -340,44 +340,65 @@ export async function searchFTS(client, query, options = {}) {
  * @param {number} [options.k] - Number of results (default 10)
  * @param {string} [options.type] - Filter by memory type
  * @param {number} [options.rrf_k] - RRF parameter (default 60)
+ * @param {boolean} [options.rerank] - Use cross-encoder reranker for final scoring (default false)
  * @returns {Promise<Memory[]>}
  */
 export async function searchHybrid(client, query, options = {}) {
-    const { k = 10, type, rrf_k = 60 } = options;
+    const { k = 10, type, rrf_k = 60, rerank: useRerank = false } = options;
+    // Wide retrieval funnel — always fetch at least 20 candidates
+    const fetchK = Math.max(k * 3, 20);
 
     // Run both searches in parallel
     const [semanticResults, ftsResults] = await Promise.all([
-        searchSemantic(client, query, { k: k * 2, type }),
-        searchFTS(client, query, { k: k * 2, type }).catch(() => []),
+        searchSemantic(client, query, { k: fetchK, type }),
+        searchFTS(client, query, { k: fetchK, type }).catch(() => []),
     ]);
 
-    // Build RRF scores
+    // Build RRF scores with importance/strength weighting
     /** @type {Map<number, {memory: Memory, score: number}>} */
     const combined = new Map();
 
     // Score from semantic search (rank by position)
     semanticResults.forEach((mem, rank) => {
         const rrfScore = 1 / (rrf_k + rank + 1);
-        combined.set(mem.id, { memory: mem, score: rrfScore });
+        // Slight boost for high-importance and high-strength memories
+        const qualityBoost = 1 + (mem.importance - 0.5) * 0.1 + (mem.strength - 0.5) * 0.05;
+        combined.set(mem.id, { memory: mem, score: rrfScore * qualityBoost });
     });
 
     // Score from FTS (rank by position)
     ftsResults.forEach((mem, rank) => {
         const rrfScore = 1 / (rrf_k + rank + 1);
+        const qualityBoost = 1 + (mem.importance - 0.5) * 0.1 + (mem.strength - 0.5) * 0.05;
         const existing = combined.get(mem.id);
         if (existing) {
-            existing.score += rrfScore;
+            existing.score += rrfScore * qualityBoost;
         } else {
-            combined.set(mem.id, { memory: mem, score: rrfScore });
+            combined.set(mem.id, { memory: mem, score: rrfScore * qualityBoost });
         }
     });
 
     // Sort by combined RRF score (descending)
     const sorted = [...combined.values()]
-        .sort((a, b) => b.score - a.score)
-        .slice(0, k);
+        .sort((a, b) => b.score - a.score);
 
-    return sorted.map((item) => {
+    // If reranking is enabled: take top candidates and re-score with cross-encoder
+    if (useRerank && sorted.length > 0) {
+        // Take more candidates than k for reranking (wider funnel)
+        const rerankCandidates = sorted.slice(0, Math.max(k * 2, 10));
+        const documents = rerankCandidates.map((item) => `${item.memory.title}\n${item.memory.content}`);
+
+        const reranked = await rerank(query, documents, { topK: k });
+
+        return reranked.map((r) => {
+            const mem = rerankCandidates[r.index].memory;
+            mem.score = r.score;
+            return mem;
+        });
+    }
+
+    // Without reranking: just take top-k
+    return sorted.slice(0, k).map((item) => {
         item.memory.score = item.score;
         return item.memory;
     });
