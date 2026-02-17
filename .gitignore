@@ -7,6 +7,9 @@ node_modules/
 **/*.db-wal
 **/*.db-shm
 
+# Ingestion temp files
+**/data/*.json
+
 # Model cache (downloaded on first run)
 .models/
 

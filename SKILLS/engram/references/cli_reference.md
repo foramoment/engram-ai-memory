@@ -130,9 +130,10 @@ engram ingest --file memories.json    # From file (recommended)
 cat memories.json | engram ingest     # From stdin
 ```
 
-| Option              | Description         |
-| ------------------- | ------------------- |
-| `-f, --file <path>` | Read JSON from file |
+| Option              | Description                                                   |
+| ------------------- | ------------------------------------------------------------- |
+| `-f, --file <path>` | Read JSON from file                                           |
+| `--remove-file`     | Delete source file after successful ingest (only with --file) |
 
 **JSON format:**
 ```json
@@ -149,6 +150,17 @@ cat memories.json | engram ingest     # From stdin
 ```
 
 Fields: `type` (required), `title` (required), `content`, `tags` (array or comma-string), `permanent` (bool), `importance` (0–1).
+
+**`--remove-file` behavior:**
+- ✅ Deletes file only when **all** memories ingest successfully
+- ⚠️ Preserves file if any memory fails (safe for retry)
+- ⚠️ Ignored when input comes from stdin or argument (not a file)
+
+**Best practice:** Always use `--remove-file` with `--file` to prevent temp files from being accidentally committed.
+
+```bash
+engram ingest --file memories.json --remove-file
+```
 
 ---
 

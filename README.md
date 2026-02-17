@@ -141,9 +141,10 @@ engram search "query" --rerank    # with cross-encoder
 ### Batch Ingest
 
 ```bash
-engram ingest --file memories.json              # from file
-echo '[{"type":"fact",...}]' | engram ingest     # from stdin
-engram ingest '[{"type":"fact",...}]'            # from argument
+engram ingest --file memories.json               # from file (keep)
+engram ingest --file memories.json --remove-file  # from file (auto-delete after success)
+echo '[{"type":"fact",...}]' | engram ingest      # from stdin
+engram ingest '[{"type":"fact",...}]'             # from argument
 ```
 
 ### Management

@@ -65,7 +65,7 @@ Read silently, use the context naturally.
 | Important decision with rationale   | `decision`   |     —      | "Chose X over Y because Z"              |
 
 **Efficiency rules:**
-- For 3+ memories → use `ingest --file` (one model load instead of N)
+- For 3+ memories → use `ingest --file ... --remove-file` (one model load, auto-cleanup)
 - Always check for duplicates before saving: `engram recall "topic" --short`
 - Title = searchable summary (write titles you'd want to find later)
 - Content = full context (include ALL relevant details)
@@ -77,7 +77,7 @@ When the user says `/remember` or `запомни`:
 
 1. **Analyze** conversation for new reflexes, episodes, facts, preferences, decisions
 2. **Check** existing memories: `engram recall "topic" --short` for each area
-3. **Write** via `engram ingest --file <tmp>.json` (batch is always better)
+3. **Write** via `engram ingest --file <tmp>.json --remove-file` (batch + auto-cleanup)
 4. **Confirm** to user briefly what was saved
 
 ---
@@ -236,8 +236,9 @@ Is this a rule/pattern?
 | Save every small detail            | Save only what's worth finding later               |
 | Write vague titles like "Bug fix"  | Write searchable titles: "LibSQL vector index NPE" |
 | Use `search` for everyday context  | Use `recall` (it does more automatically)          |
-| Save 10 memories one at a time     | Batch with `ingest --file`                         |
+| Save 10 memories one at a time     | Batch with `ingest --file ... --remove-file`       |
 | Forget to tag with project name    | Always include project tag for filtering           |
+| Leave temp JSON files after ingest | Always use `--remove-file` with `ingest --file`    |
 | Let memory grow unbounded          | Run `sleep` periodically, check `diagnostics`      |
 | Skip duplicate check before saving | Always `recall "topic" --short` first              |
 | Create memories without content    | Always add full context in `-c`                    |

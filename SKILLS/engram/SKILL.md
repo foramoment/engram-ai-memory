@@ -90,8 +90,11 @@ engram add preference "User hardware" \
 One model load for the entire batch — **4x faster** than individual adds.
 
 ```bash
-engram ingest --file memories.json
+engram ingest --file memories.json               # keep file
+engram ingest --file memories.json --remove-file  # delete file after success
 ```
+
+`--remove-file` auto-deletes the JSON file after **all** memories are ingested successfully. If any fail, the file is preserved for retry. **Always use `--remove-file`** to avoid accidentally committing temporary JSON files.
 
 ```json
 [
@@ -128,7 +131,7 @@ When the user says `/remember` or `запомни`:
 
 1. **Analyze** conversation for new reflexes, episodes, facts, preferences, decisions
 2. **Check** existing memories: `engram recall "topic" --short` for each area
-3. **Write** via `engram ingest --file <tmp>.json` (batch preferred)
+3. **Write** via `engram ingest --file <tmp>.json --remove-file` (batch preferred, auto-cleanup)
 4. **Confirm** to the user briefly what was saved
 
 ## Session Management
@@ -176,9 +179,31 @@ engram export [-f md] [-o file.json]               # Export all
 | ---------------- | ---------------------------------------------------- |
 | `ENGRAM_TRACE=1` | Diagnostic logging to stderr (model loading, timing) |
 
+## Essential Best Practices
+
+> These patterns are critical for effective Engram usage. **Read them before your first use.**
+
+### Search: `recall` vs `search`
+
+- **`recall`** — always your first choice. It does hybrid search + reranking + graph expansion + scoring + budget fitting automatically.
+- **`search`** — only when you need: specific mode (`-m fts`), time filtering (`--since 1d`), multi-hop (`--hops 2`), or more than 10 results.
+
+### Anti-Patterns
+
+| ❌ Don't                            | ✅ Do Instead                                       |
+| ---------------------------------- | -------------------------------------------------- |
+| Announce "Loading memories..."     | Read silently, use context naturally               |
+| Save every small detail            | Save only what's worth finding later               |
+| Write vague titles like "Bug fix"  | Write searchable titles: "LibSQL vector index NPE" |
+| Use `search` for everyday context  | Use `recall` (it does more automatically)          |
+| Save 10 memories one at a time     | Batch with `ingest --file ... --remove-file`       |
+| Forget to tag with project name    | Always include project tag for filtering           |
+| Leave temp JSON files after ingest | Always use `--remove-file` with `ingest --file`    |
+| Leave reflexes non-permanent       | Mark reflexes and preferences as `--permanent`     |
+
 ## Full Reference
 
-For complete command syntax, all options, usage patterns, and anti-patterns:
+For complete command syntax, all options, and deeper patterns:
 
 - 📖 **[CLI Reference](references/cli_reference.md)** — every command with all options and examples
 - 🧠 **[Effective Usage Guide](references/effective_usage.md)** — session lifecycle, search strategy, graph patterns, consolidation, decision trees

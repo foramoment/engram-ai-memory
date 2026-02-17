@@ -506,6 +506,7 @@ program
     .description("Batch-add memories from a JSON array (stdin, --file, or argument)")
     .argument("[json]", "JSON array of memories (or use stdin / --file)")
     .option("-f, --file <path>", "Read JSON from file")
+    .option("--remove-file", "Delete the source file after successful ingest (only with --file)")
     .action(async (jsonArg, opts) => {
         let raw;
         if (opts.file) {
@@ -582,6 +583,22 @@ program
         const ok = results.filter((r) => r.ok).length;
         const failed = results.filter((r) => !r.ok).length;
         console.log(`\n📥 Ingested: ${ok}/${memories.length} memories${failed ? ` (${failed} failed)` : ""}`);
+
+        // Remove source file after successful ingest
+        if (opts.removeFile && opts.file && failed === 0) {
+            const { unlinkSync } = await import("node:fs");
+            try {
+                unlinkSync(opts.file);
+                console.log(`🗑️  Removed source file: ${opts.file}`);
+            } catch (/** @type {any} */ err) {
+                console.error(`⚠️  Could not remove file: ${err?.message || String(err)}`);
+            }
+        } else if (opts.removeFile && !opts.file) {
+            console.error(`⚠️  --remove-file requires --file (ignored for stdin/argument input)`);
+        } else if (opts.removeFile && failed > 0) {
+            console.error(`⚠️  --remove-file skipped: ${failed} memories failed (file preserved for retry)`);
+        }
+
         await closeDb();
     });
 // Force exit after all commands complete — transformers.js worker threads
