@@ -46,11 +46,24 @@ Issues Discovered/Fixed:
 Completion Status: 14/20 features passing (70%)
 Last Working Commit: fe6bf76
 
+--- Session: 2026-02-17 ~04:15 ---
+
+Accomplished:
+  - F015: Migration tool — parses all 4 Persistent Memory skill markdown formats
+    (reflexes.md, episodes.md, preferences.md, project_graph.md)
+    Auto-embeds, tags, links related projects. CLI: engram migrate <dir>
+  - F017: Diagnostics — getWeakest(), getDuplicateCandidates() APIs + CLI command
+  - F018: Export enhancement — exportMemories() with full tags and links (MD + JSON)
+  - F019: WebGPU detection & performance logging (already in embeddings.js)
+  - F020: Auto-consolidation — startSessionWithConsolidationCheck() + CLI --auto-consolidate
+  - Fixed all TS lint errors across memory.js, consolidation.js
+  - 82/82 tests pass across 19 suites (7 new migration tests)
+
+Completion Status: 19/20 features passing (95%)
+Last Working Commit: 8520334
+
 Next Session Should:
-  - F015: Migration tool for schema upgrades
-  - F016: Skill integration (SKILL.md protocol for Antigravity)
-  - F017: Import/export CLI enhancements
-  - F018-F020: Performance optimization, LLM pattern extraction, batch operations
+  - F016: Skill integration (SKILL.md protocol for Antigravity) — last remaining feature
 
 ---
 
@@ -58,15 +71,18 @@ Next Session Should:
 CURRENT STATE
 ================================================================================
 
-Status: Core Complete — CLI Functional
-Last Working Commit: fe6bf76
+Status: Near-Complete — Only F016 (Skill Integration) Remains
+Last Working Commit: 8520334
+Tests: 82/82 passing, 19 suites
 Blocking Issues: None
 
 ================================================================================
 NEXT STEPS
 ================================================================================
 
-1. F015: Migration tool for cross-version schema upgrades
-2. F016: Antigravity skill integration (SKILL.md + workflows)
-3. F017: Import/export enhancements & data portability
-4. F018: Performance benchmarks & optimization
+1. F016: Antigravity skill integration (SKILL.md + workflows)
+   - Create SKILL.md with frontmatter
+   - Auto-load: engram recall on session start
+   - Save (/remember): engram add + engram link
+   - Session end: engram session end + conditional sleep
+   - Manual testing in Antigravity

@@ -4,7 +4,7 @@
         "description": "Cognitive memory system for AI agents — LibSQL + BGE-M3 + sleep consolidation",
         "stack": "Node.js 20+, LibSQL, Transformers.js v4, Commander.js",
         "created_at": "2026-02-17T02:57:00Z",
-        "last_updated": "2026-02-17T03:55:00Z"
+        "last_updated": "2026-02-17T04:15:00Z"
     },
     "features": [
         {
@@ -232,7 +232,7 @@
                 "Report shows import statistics",
                 "Unit tests pass for parsing logic"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -262,7 +262,7 @@
                 "getDuplicateCandidates(threshold) returns near-duplicate pairs",
                 "Unit tests pass"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -276,7 +276,7 @@
                 "Both formats include tags and links",
                 "Unit tests pass"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -291,7 +291,7 @@
                 "Fallback to WASM with warning",
                 "Unit tests pass for detection logic"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -305,7 +305,7 @@
                 "Optional auto-run flag",
                 "Unit tests pass"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         }
     ]
