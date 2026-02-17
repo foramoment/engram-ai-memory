@@ -31,7 +31,6 @@ import { getMeta, setMeta } from "./db.js";
  * @property {number} [mergeThreshold]    - Cosine similarity for merging (default 0.92)
  * @property {number} [boostFactor]       - Multiplier for frequently accessed memories (default 1.1)
  * @property {number} [boostMinAccess]    - Min access count to qualify for boost (default 3)
- * @property {string} [llmEndpoint]       - LM Studio API URL (default localhost:1234)
  * @property {boolean} [dryRun]           - If true, don't modify data
  */
 
@@ -62,8 +61,16 @@ export async function runConsolidation(client, options = {}) {
 
     trace("[engram] 💤 Starting sleep consolidation...");
 
-    // Step 1: Decay
-    const decayed = await stepDecay(client, decayRate, dryRun);
+    // Retrieve last consolidation timestamp for idempotent decay/boost
+    const lastRunIso = await getMeta(client, "last_consolidation_at");
+    const lastRunAt = lastRunIso || null;
+    const daysSinceLast = lastRunAt
+        ? (Date.now() - new Date(lastRunAt).getTime()) / (1000 * 60 * 60 * 24)
+        : null;
+    trace(`[engram]   Last run: ${lastRunAt ?? 'never'} (${daysSinceLast?.toFixed(1) ?? '∞'} days ago)`);
+
+    // Step 1: Decay — only for the period since last consolidation
+    const decayed = await stepDecay(client, decayRate, dryRun, lastRunAt);
     trace(`[engram]   Decay: ${decayed} memories affected`);
 
     // Step 2: Prune
@@ -74,14 +81,21 @@ export async function runConsolidation(client, options = {}) {
     const merged = await stepMerge(client, mergeThreshold, dryRun);
     trace(`[engram]   Merge: ${merged} duplicates merged`);
 
-    // Step 4: Extract (placeholder — requires LLM)
+    // Step 4: Extract — placeholder for future LLM-based pattern extraction.
+    // When implemented, this step will analyze clusters of related memories
+    // and extract common patterns, generalizations, or meta-rules.
+    // Requires access to a local LLM (e.g. via LM Studio API).
     /** @type {string[]} */
     const patterns = [];
-    // TODO: Implement LLM-based pattern extraction via LM Studio
 
-    // Step 5: Boost
-    const boosted = await stepBoost(client, boostFactor, boostMinAccess, dryRun);
-    trace(`[engram]   Boost: ${boosted} memories strengthened`);
+    // Step 5: Boost — only if ≥1 day since last consolidation (idempotency guard)
+    let boosted = 0;
+    if (daysSinceLast === null || daysSinceLast >= 1.0) {
+        boosted = await stepBoost(client, boostFactor, boostMinAccess, dryRun);
+        trace(`[engram]   Boost: ${boosted} memories strengthened`);
+    } else {
+        trace(`[engram]   Boost: skipped (only ${daysSinceLast.toFixed(1)} days since last run, need ≥1)`);
+    }
 
     // Update last consolidation timestamp
     if (!dryRun) {
@@ -95,15 +109,22 @@ export async function runConsolidation(client, options = {}) {
 }
 
 /**
- * Step 1: Decay — Ebbinghaus forgetting curve.
- * strength *= decayRate ^ daysSinceLastAccess
+ * Step 1: Decay — Ebbinghaus forgetting curve (idempotent).
+ *
+ * Decays strength only for the period since last consolidation run,
+ * not from the absolute last_accessed_at. This makes decay idempotent:
+ * running consolidation twice in a row won't double-decay.
+ *
+ * Formula: strength *= decayRate ^ daysSinceLastConsolidation
+ * First run (no history): uses days since last_accessed_at as fallback.
  *
  * @param {import("@libsql/client").Client} client
  * @param {number} decayRate
  * @param {boolean} dryRun
+ * @param {string | null} lastRunAt - ISO timestamp of last consolidation
  * @returns {Promise<number>}
  */
-async function stepDecay(client, decayRate, dryRun) {
+async function stepDecay(client, decayRate, dryRun, lastRunAt) {
     // F026: Exclude memories tagged 'permanent' from decay
     const permanentExclude = `AND m.id NOT IN (
         SELECT mt.memory_id FROM memory_tags mt
@@ -117,17 +138,18 @@ async function stepDecay(client, decayRate, dryRun) {
         return Number(count.rows[0].n);
     }
 
-    // Calculate days since last access and apply decay
+    // Idempotent decay: only decay for the days SINCE the last consolidation run.
+    // If no prior run, fall back to days since last access (first-time catch-up).
     const result = await client.execute({
         sql: `UPDATE memories SET 
-          strength = strength * POWER(?, MAX(1, julianday('now') - julianday(COALESCE(last_accessed_at, created_at)))),
+          strength = strength * POWER(?, MAX(1, julianday('now') - julianday(COALESCE(?, last_accessed_at, created_at)))),
           updated_at = datetime('now')
           WHERE archived = 0 AND strength > 0
           AND id NOT IN (
               SELECT mt.memory_id FROM memory_tags mt
               JOIN tags t ON t.id = mt.tag_id WHERE t.name = 'permanent'
           )`,
-        args: [decayRate],
+        args: [decayRate, lastRunAt],
     });
 
     return result.rowsAffected;

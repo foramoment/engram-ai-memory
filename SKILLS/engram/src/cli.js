@@ -456,6 +456,90 @@ program
         await closeDb();
     });
 
+
+// -- ingest (batch) --
+program
+    .command("ingest")
+    .description("Batch-add memories from a JSON array (stdin, --file, or argument)")
+    .argument("[json]", "JSON array of memories (or use stdin / --file)")
+    .option("-f, --file <path>", "Read JSON from file")
+    .action(async (jsonArg, opts) => {
+        let raw;
+        if (opts.file) {
+            const { readFileSync } = await import("node:fs");
+            raw = readFileSync(opts.file, "utf8");
+        } else if (jsonArg) {
+            raw = jsonArg;
+        } else {
+            const chunks = [];
+            process.stdin.setEncoding("utf8");
+            for await (const chunk of process.stdin) {
+                chunks.push(chunk);
+            }
+            raw = chunks.join("");
+        }
+
+        if (!raw || !raw.trim()) {
+            console.error("Error: no JSON input provided. Use stdin, --file, or pass as argument.");
+            process.exit(1);
+        }
+
+        let memories;
+        try {
+            memories = JSON.parse(raw);
+        } catch (e) {
+            console.error(`Error: invalid JSON — ${e.message}`);
+            process.exit(1);
+        }
+
+        if (!Array.isArray(memories)) {
+            console.error("Error: expected a JSON array of memory objects.");
+            process.exit(1);
+        }
+
+        const VALID_TYPES = new Set(["reflex", "episode", "fact", "preference", "decision"]);
+        for (let i = 0; i < memories.length; i++) {
+            const m = memories[i];
+            if (!m.type || !m.title) {
+                console.error(`Error: memory[${i}] missing required field "type" or "title".`);
+                process.exit(1);
+            }
+            if (!VALID_TYPES.has(m.type)) {
+                console.error(`Error: memory[${i}] has invalid type "${m.type}". Valid: ${[...VALID_TYPES].join(", ")}`);
+                process.exit(1);
+            }
+        }
+
+        const { client } = await initDb();
+        const results = [];
+
+        for (let i = 0; i < memories.length; i++) {
+            const m = memories[i];
+            const tags = m.tags ? (Array.isArray(m.tags) ? m.tags : m.tags.split(",").map((t) => t.trim())) : [];
+            if (m.permanent && !tags.includes("permanent")) tags.push("permanent");
+
+            try {
+                const id = await addMemory(client, {
+                    type: m.type,
+                    title: m.title,
+                    content: m.content || m.title,
+                    tags,
+                    importance: m.importance ?? 0.5,
+                    autoLink: m.autoLink !== false,
+                });
+                results.push({ id, title: m.title, type: m.type, ok: true });
+                console.log(`  ✅ #${id} [${m.type}] "${m.title}"`);
+            } catch (e) {
+                results.push({ title: m.title, type: m.type, ok: false, error: e.message });
+                console.error(`  ❌ [${m.type}] "${m.title}" — ${e.message}`);
+            }
+        }
+
+        const ok = results.filter((r) => r.ok).length;
+        const failed = results.filter((r) => !r.ok).length;
+        console.log(`\n📥 Ingested: ${ok}/${memories.length} memories${failed ? ` (${failed} failed)` : ""}`);
+        await closeDb();
+    });
 // Force exit after all commands complete — transformers.js worker threads
 // keep the process alive otherwise, causing a hang after output is printed.
 program.hook("postAction", () => {

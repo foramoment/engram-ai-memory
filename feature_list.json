@@ -4,7 +4,7 @@
         "description": "Cognitive memory system for AI agents — LibSQL + BGE-M3 + sleep consolidation",
         "stack": "Node.js 20+, LibSQL, Transformers.js v4, Commander.js",
         "created_at": "2026-02-17T02:57:00Z",
-        "last_updated": "2026-02-17T04:50:00Z"
+        "last_updated": "2026-02-17T06:38:00Z"
     },
     "features": [
         {
@@ -406,6 +406,64 @@
             ],
             "passes": true,
             "notes": "autoLink=true default, recall rerank+hops, --permanent flag"
+        },
+        {
+            "id": "F028",
+            "category": "ux",
+            "priority": "high",
+            "description": "Clean output: trace logging, --short flag, no process hang",
+            "steps": [
+                "Replace console.log with trace() (stderr, ENGRAM_TRACE=1)",
+                "Default recall output = full markdown for agent consumption",
+                "--short flag for compact human-readable preview",
+                "postAction hook forces process.exit(0) to prevent transformer thread hang",
+                "Explicit dtype:fp32 for reranker to suppress warning"
+            ],
+            "passes": true,
+            "notes": "trace() applied to embeddings.js, consolidation.js, db.js, session.js"
+        },
+        {
+            "id": "F029",
+            "category": "functional",
+            "priority": "medium",
+            "description": "Relevance noise gate: filter low-scoring memories before token budget",
+            "steps": [
+                "MIN_SCORE = 0.001 threshold in recall()",
+                "Hop-linked memories (score=-1 sentinel) bypass the gate",
+                "Prevents unrelated results from filling token budget"
+            ],
+            "passes": true,
+            "notes": "Composite score < 0.001 dropped as noise in foa.js"
+        },
+        {
+            "id": "F030",
+            "category": "functional",
+            "priority": "high",
+            "description": "Idempotent consolidation: safe to run twice without double-decay/boost",
+            "steps": [
+                "Decay uses last_consolidation_at as base (not absolute last_accessed_at)",
+                "Boost has >=1 day cooldown guard",
+                "Removed llmEndpoint from ConsolidationOptions",
+                "Extract step preserved as documented stub for future LLM integration"
+            ],
+            "passes": true,
+            "notes": "Decay: POWER(rate, days_since_last_run). Boost: skipped if <1d since last run."
+        },
+        {
+            "id": "F031",
+            "category": "packaging",
+            "priority": "high",
+            "description": "Portable skill folder: SKILLS/engram/ is self-contained, copy-to-deploy",
+            "steps": [
+                "All source moved to SKILLS/engram/src/",
+                "scripts/ with session-start.ps1 and remember.ps1",
+                "SKILL.md with setup, CLI reference, proactive memory guidance",
+                "README.md with capabilities, architecture decisions, performance data",
+                "npm link registers global engram command",
+                ".gitignore with ** globs for nested paths"
+            ],
+            "passes": true,
+            "notes": "Deploy: copy SKILLS/engram/ -> npm install -> npm link -> done"
         }
     ]
 }

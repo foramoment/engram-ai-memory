@@ -1,11 +1,11 @@
 # Dependencies
 node_modules/
 
-# Database files
-data/*.db
-data/*.db-journal
-data/*.db-wal
-data/*.db-shm
+# Database files (anywhere in tree)
+**/*.db
+**/*.db-journal
+**/*.db-wal
+**/*.db-shm
 
 # Model cache (downloaded on first run)
 .models/
@@ -20,5 +20,3 @@ Thumbs.db
 
 # Logs
 *.log
-
-test_*.db
