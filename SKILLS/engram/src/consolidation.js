@@ -142,7 +142,7 @@ async function stepDecay(client, decayRate, dryRun, lastRunAt) {
     // If no prior run, fall back to days since last access (first-time catch-up).
     const result = await client.execute({
         sql: `UPDATE memories SET 
-          strength = strength * POWER(?, MAX(1, julianday('now') - julianday(COALESCE(?, last_accessed_at, created_at)))),
+          strength = strength * POWER(?, MAX(0, julianday('now') - julianday(COALESCE(?, last_accessed_at, created_at)))),
           updated_at = datetime('now')
           WHERE archived = 0 AND strength > 0
           AND id NOT IN (

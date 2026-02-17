@@ -179,4 +179,60 @@ describe("migrate.js — full migration (integration)", { concurrency: false }, 
             assert.ok(result.links >= 1, "Should create project links");
         }
     });
+
+    it("should store numeric IDs for project linking (not objects)", async () => {
+        // Reset DB for this specific test
+        await client.execute("DELETE FROM access_log");
+        await client.execute("DELETE FROM memory_tags");
+        await client.execute("DELETE FROM memory_links");
+        await client.execute("DELETE FROM memories");
+        await client.execute("DELETE FROM tags");
+
+        // Create two projects that reference each other
+        const { writeFileSync } = await import("node:fs");
+        const { resolve: r } = await import("node:path");
+        const { mkdirSync } = await import("node:fs");
+        const tmpDir = r(__dirname, "..", "..", "data", "test_migrate_linking");
+        mkdirSync(tmpDir, { recursive: true });
+
+        // Write a project_graph.md with two cross-referencing projects
+        writeFileSync(r(tmpDir, "project_graph.md"), `# Project Graph
+
+## Alpha Project
+- **Stack:** Node.js
+- **Status:** Active
+- **Related:** Beta Project
+
+## Beta Project
+- **Stack:** Rust
+- **Status:** Active
+- **Related:** Alpha Project
+`);
+        // Write empty files for other parsers to skip
+        writeFileSync(r(tmpDir, "reflexes.md"), "# Reflexes\n");
+        writeFileSync(r(tmpDir, "episodes.md"), "# Episodes\n");
+        writeFileSync(r(tmpDir, "preferences.md"), "# Preferences\n");
+
+        const result = await migrateFromSkill(client, tmpDir, { linkProjects: true });
+        assert.equal(result.projects, 2, "Should import 2 projects");
+        assert.ok(result.links >= 1, "Should create at least 1 cross-project link");
+
+        // Verify links have valid numeric IDs (not "[object Object]")
+        const linkRows = await client.execute(
+            "SELECT source_id, target_id FROM memory_links"
+        );
+        assert.ok(linkRows.rows.length >= 1, "Should have link rows in DB");
+        for (const row of linkRows.rows) {
+            const src = Number(row.source_id);
+            const tgt = Number(row.target_id);
+            assert.ok(Number.isInteger(src) && src > 0,
+                `source_id should be a positive integer, got: ${JSON.stringify(row.source_id)}`);
+            assert.ok(Number.isInteger(tgt) && tgt > 0,
+                `target_id should be a positive integer, got: ${JSON.stringify(row.target_id)}`);
+        }
+
+        // Cleanup temp dir
+        const { rmSync } = await import("node:fs");
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
 });

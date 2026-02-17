@@ -272,7 +272,7 @@ export async function migrateFromSkill(client, sourceDir, options = {}) {
 
         for (const entry of entries) {
             try {
-                const id = await addMemory(client, {
+                const { id } = await addMemory(client, {
                     type: /** @type {any} */ (entry.type),
                     title: entry.title,
                     content: entry.content,

@@ -9,8 +9,8 @@ import {
     addMemory, getMemory, updateMemory, deleteMemory,
     searchSemantic, searchFTS, searchHybrid,
     addTag, removeTag, getMemoriesByTag, getAllTags,
-    linkMemories, getLinks,
-    logAccess, getStats,
+    linkMemories, getLinks, findRelated,
+    logAccess, getStats, exportMemories,
 } from "../memory.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -267,6 +267,31 @@ describe("memory.js — Hybrid Search (RRF)", () => {
             assert.ok(r.score > 0, "Score should be positive");
         }
     });
+
+    it("BUG: hops should work even with rerank=true", async () => {
+        // Setup: create linked memories A → B, then search with rerank+hops
+        await clearTables();
+        const { id: idA } = await addMemory(client, {
+            type: "fact", title: "Vector Indexing Algorithms",
+            content: "DiskANN and HNSW are popular algorithms for approximate nearest neighbor vector search.",
+        });
+        const { id: idB } = await addMemory(client, {
+            type: "fact", title: "DiskANN Performance",
+            content: "DiskANN achieves state-of-the-art recall with low memory footprint by using disk-based graph traversal.",
+        });
+        // Link A → B
+        await linkMemories(client, idA, idB, "related_to");
+
+        // Search with rerank=true AND hops=1 — should return linked memories too
+        const results = await searchHybrid(client, "vector search algorithms", {
+            k: 5, hops: 1, rerank: true,
+        });
+        const resultIds = results.map(r => r.id);
+        // At minimum, idA should match search. With hops=1, idB should also appear.
+        assert.ok(resultIds.includes(idA), "Should find the directly matching memory");
+        assert.ok(resultIds.includes(idB),
+            `hops=1 with rerank=true should include linked memory (idB=${idB}), got ids: [${resultIds}]`);
+    });
 });
 
 describe("memory.js — Tags", () => {
@@ -285,6 +310,28 @@ describe("memory.js — Tags", () => {
         const memory = await getMemory(client, id);
         assert.ok(memory?.tags?.includes("test-tag"));
         assert.ok(memory?.tags?.includes("another tag"));
+    });
+
+    it("BUG: tags should be applied on exact duplicate add", async () => {
+        // First add: no permanent tag
+        const { id: id1 } = await addMemory(client, {
+            type: "fact", title: "Duplicate Tag Test", content: "Test content for tag dedup",
+            tags: ["original"],
+        });
+
+        // Second add: same type+title = exact duplicate, but with "permanent" tag
+        const { id: id2, status } = await addMemory(client, {
+            type: "fact", title: "Duplicate Tag Test", content: "Test content for tag dedup",
+            tags: ["permanent"],
+        });
+        assert.equal(id2, id1, "Should return same ID for duplicate");
+        assert.equal(status, "duplicate");
+
+        // The "permanent" tag should still be applied to the existing memory
+        const memory = await getMemory(client, id1);
+        assert.ok(memory.tags.includes("original"), "Should keep original tag");
+        assert.ok(memory.tags.includes("permanent"),
+            `Duplicate add with tags should apply those tags, got: [${memory.tags}]`);
     });
 
     it("should remove a tag", async () => {
@@ -398,8 +445,6 @@ describe("memory.js — Stats", () => {
         await addMemory(client, { type: "reflex", title: "Reflex 1", content: "Stats content C" });
     });
 
-    after(() => cleanupAll());
-
     it("should return correct statistics", async () => {
         // Link first two memories
         const allMems = await client.execute("SELECT id FROM memories ORDER BY id");
@@ -414,4 +459,84 @@ describe("memory.js — Stats", () => {
         assert.equal(stats.totalLinks, 1);
         assert.ok(stats.avgStrength > 0);
     });
+});
+
+describe("memory.js — Export", () => {
+    before(async function () {
+        this.timeout = 300_000;
+        await clearTables();
+
+        const { id: id1 } = await addMemory(client, {
+            type: "fact", title: "Export Fact", content: "Content for export test",
+            tags: ["test-export", "important"],
+        });
+        const { id: id2 } = await addMemory(client, {
+            type: "reflex", title: "Export Reflex", content: "Reflex content for export",
+            tags: ["test-export"],
+        });
+        await linkMemories(client, id1, id2, "related_to");
+    });
+
+    it("should export as JSON with tags and links", async () => {
+        const output = await exportMemories(client, "json");
+        const parsed = JSON.parse(output);
+        assert.ok(Array.isArray(parsed));
+        assert.equal(parsed.length, 2);
+
+        const fact = parsed.find((m) => m.type === "fact");
+        assert.ok(fact, "Should include fact");
+        assert.equal(fact.title, "Export Fact");
+        assert.ok(fact.tags.includes("test-export"));
+        assert.ok(fact.tags.includes("important"));
+        assert.ok(fact.links.length >= 1, "Should include links");
+    });
+
+    it("should export as Markdown", async () => {
+        const output = await exportMemories(client, "md");
+        assert.ok(output.includes("# Engram Memory Export"));
+        assert.ok(output.includes("Export Fact"));
+        assert.ok(output.includes("Export Reflex"));
+        assert.ok(output.includes("Tags:"));
+        assert.ok(output.includes("test-export"));
+        assert.ok(output.includes("Links:"));
+    });
+});
+
+describe("memory.js — findRelated", () => {
+    before(async function () {
+        this.timeout = 300_000;
+        await clearTables();
+    });
+
+    it("should find related memories via links and semantic similarity", async () => {
+        const { id: id1 } = await addMemory(client, {
+            type: "fact", title: "Database Fundamentals",
+            content: "Relational databases store data in tables with rows and columns",
+        });
+        const { id: id2 } = await addMemory(client, {
+            type: "fact", title: "SQL Queries",
+            content: "SQL is used to query relational databases with SELECT statements",
+        });
+        const { id: id3 } = await addMemory(client, {
+            type: "fact", title: "Cooking Recipes",
+            content: "Italian pasta requires al dente cooking technique",
+        });
+
+        // Link id1 → id2
+        await linkMemories(client, id1, id2, "related_to");
+
+        const related = await findRelated(client, id1, 5);
+        assert.ok(related.length >= 1, "Should find at least the linked memory");
+
+        // The linked memory (SQL Queries) should be in results
+        const linkedResult = related.find((m) => m.id === id2);
+        assert.ok(linkedResult, "Directly linked memory should appear in results");
+    });
+
+    it("should return empty for non-existent memory", async () => {
+        const related = await findRelated(client, 99999);
+        assert.equal(related.length, 0);
+    });
+
+    after(() => cleanupAll());
 });

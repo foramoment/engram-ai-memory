@@ -6,7 +6,7 @@
  * Combines hybrid search with session context and ranks by composite score.
  */
 
-import { searchHybrid } from "./memory.js";
+import { searchHybrid, logAccess } from "./memory.js";
 import { getSessionContext } from "./session.js";
 
 const trace = (...args) => process.env.ENGRAM_TRACE === "1" && process.stderr.write(args.join(" ") + "\n");
@@ -131,6 +131,13 @@ export async function recall(client, query, options = {}) {
             sessionContext = ctx.session.summary;
             tokenCount += estimateTokens(sessionContext);
         }
+    }
+
+    // 5. Log access for all returned memories (batch, fire-and-forget)
+    if (memories.length > 0) {
+        Promise.all(
+            memories.map((mem) => logAccess(client, mem.id, sessionId || null, query, mem.score))
+        ).catch((err) => trace("[engram] logAccess batch failed:", err.message));
     }
 
     return {

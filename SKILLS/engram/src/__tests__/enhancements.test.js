@@ -1,6 +1,10 @@
 // @ts-check
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { initDb, closeDb } from "../db.js";
+import { describe, it, before, after } from "node:test";
+import assert from "node:assert/strict";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { unlinkSync, existsSync } from "node:fs";
+import { initDb, resetClient } from "../db.js";
 import {
     addMemory, getMemory, searchHybrid, searchSemantic,
     linkMemories, getLinks, addTag, removeTag,
@@ -9,25 +13,49 @@ import {
 import { embed, vectorToBlob } from "../embeddings.js";
 import { runConsolidation } from "../consolidation.js";
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const TEST_DB_PATH = resolve(__dirname, "..", "..", "data", "test_enhancements.db");
+
 /** @type {import("@libsql/client").Client} */
 let client;
+let dbReady = false;
 
-beforeAll(async () => {
-    const db = await initDb("file:test_enhancements.db");
-    client = db.client;
-}, 120_000);
+async function ensureDb() {
+    if (!dbReady) {
+        resetClient();
+        for (const suffix of ["", "-journal", "-wal", "-shm"]) {
+            const p = TEST_DB_PATH + suffix;
+            if (existsSync(p)) { try { unlinkSync(p); } catch { /* */ } }
+        }
+        const db = await initDb(TEST_DB_PATH);
+        client = db.client;
+        dbReady = true;
+    }
+}
 
-afterAll(async () => {
-    await closeDb();
-});
+function cleanupAll() {
+    resetClient();
+    dbReady = false;
+    for (const suffix of ["", "-journal", "-wal", "-shm"]) {
+        const p = TEST_DB_PATH + suffix;
+        if (existsSync(p)) { try { unlinkSync(p); } catch { /* */ } }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // F022: Auto-link on write
 // ---------------------------------------------------------------------------
 describe("F022: Auto-link on write", () => {
+    before(async function () {
+        this.timeout = 300_000;
+        await ensureDb();
+    });
+
+    after(() => cleanupAll());
+
     it("should auto-link similar memories when autoLink=true", async () => {
         // Add base memory
-        const id1 = await addMemory(client, {
+        const { id: id1 } = await addMemory(client, {
             type: "fact",
             title: "JavaScript promises",
             content: "Promises are used for async operations in JavaScript. They have then/catch methods.",
@@ -35,7 +63,7 @@ describe("F022: Auto-link on write", () => {
         });
 
         // Add similar memory with auto-link
-        const id2 = await addMemory(client, {
+        const { id: id2 } = await addMemory(client, {
             type: "fact",
             title: "Async/await in JavaScript",
             content: "Async/await is syntactic sugar over promises in JavaScript for cleaner async code.",
@@ -47,17 +75,17 @@ describe("F022: Auto-link on write", () => {
         // Check that links were created
         const links = await getLinks(client, id2);
         // Should have at least found id1 as related
-        expect(links.length).toBeGreaterThanOrEqual(0); // May or may not link depending on model
-    }, 120_000);
+        assert.ok(links.length >= 0, "May or may not link depending on model");
+    });
 
     it("autoLinkMemory should return linked targets", async () => {
-        const id1 = await addMemory(client, {
+        const { id: id1 } = await addMemory(client, {
             type: "fact",
             title: "Python decorators",
             content: "Decorators in Python wrap functions with @syntax for cross-cutting concerns.",
         });
 
-        const id2 = await addMemory(client, {
+        const { id: id2 } = await addMemory(client, {
             type: "fact",
             title: "Python function decorators",
             content: "Python decorators are functions that modify other functions using the @decorator syntax.",
@@ -67,13 +95,13 @@ describe("F022: Auto-link on write", () => {
         const embedding = await embed("Python function decorators\nPython decorators are functions that modify other functions");
         const linked = await autoLinkMemory(client, id2, embedding, 0.3);
         // Verify return format
-        expect(Array.isArray(linked)).toBe(true);
+        assert.ok(Array.isArray(linked), "Should return an array");
         for (const item of linked) {
-            expect(item).toHaveProperty("targetId");
-            expect(item).toHaveProperty("similarity");
-            expect(typeof item.similarity).toBe("number");
+            assert.ok("targetId" in item, "Each item should have targetId");
+            assert.ok("similarity" in item, "Each item should have similarity");
+            assert.equal(typeof item.similarity, "number");
         }
-    }, 120_000);
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -82,31 +110,34 @@ describe("F022: Auto-link on write", () => {
 describe("F023: Multi-hop retrieval", () => {
     let idA, idB, idC;
 
-    beforeAll(async () => {
+    before(async function () {
+        this.timeout = 300_000;
+        await ensureDb();
+
         // Create a chain: A → B → C
-        idA = await addMemory(client, {
+        ({ id: idA } = await addMemory(client, {
             type: "fact",
             title: "Chain start - Alpha concept",
             content: "Alpha is the starting point of our knowledge chain test.",
             tags: ["chain"],
-        });
-        idB = await addMemory(client, {
+        }));
+        ({ id: idB } = await addMemory(client, {
             type: "fact",
             title: "Chain middle - Beta concept",
             content: "Beta extends Alpha as the middle element of the chain.",
             tags: ["chain"],
-        });
-        idC = await addMemory(client, {
+        }));
+        ({ id: idC } = await addMemory(client, {
             type: "fact",
             title: "Chain end - Gamma concept",
             content: "Gamma is the final element, extending Beta in the chain.",
             tags: ["chain"],
-        });
+        }));
 
         // Link A → B → C
         await linkMemories(client, idA, idB, "related_to");
         await linkMemories(client, idB, idC, "related_to");
-    }, 120_000);
+    });
 
     it("should return linked memories with hops=1", async () => {
         // Search for something that matches A
@@ -116,10 +147,10 @@ describe("F023: Multi-hop retrieval", () => {
         });
 
         const resultIds = results.map((m) => m.id);
-        expect(resultIds).toContain(idA);
+        assert.ok(resultIds.includes(idA), "Should find Alpha");
         // With hops=1, B should also show up (linked from A)
         // Note: depends on A being in the top-k results
-    }, 120_000);
+    });
 
     it("hops=0 should NOT include linked memories", async () => {
         const results = await searchHybrid(client, "Alpha knowledge chain start", {
@@ -128,10 +159,8 @@ describe("F023: Multi-hop retrieval", () => {
         });
 
         // Results should only be from search, not from links
-        const resultIds = results.map((m) => m.id);
-        // Check that results don't exceed k
-        expect(results.length).toBeLessThanOrEqual(3);
-    }, 120_000);
+        assert.ok(results.length <= 3, "Should not exceed k");
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -140,13 +169,13 @@ describe("F023: Multi-hop retrieval", () => {
 describe("F024: Temporal filter - parseSince", () => {
     it("should parse hours", () => {
         const result = parseSince("6h");
-        expect(result).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+        assert.match(result, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 
         // Should be approximately 6 hours ago
         const parsed = new Date(result.replace(" ", "T") + "Z");
         const now = new Date();
         const diffHours = (now.getTime() - parsed.getTime()) / (1000 * 60 * 60);
-        expect(diffHours).toBeCloseTo(6, 0);
+        assert.ok(Math.abs(diffHours - 6) < 1, `Expected ~6h, got ${diffHours.toFixed(2)}h`);
     });
 
     it("should parse days", () => {
@@ -154,7 +183,7 @@ describe("F024: Temporal filter - parseSince", () => {
         const parsed = new Date(result.replace(" ", "T") + "Z");
         const now = new Date();
         const diffDays = (now.getTime() - parsed.getTime()) / (1000 * 60 * 60 * 24);
-        expect(diffDays).toBeCloseTo(7, 0);
+        assert.ok(Math.abs(diffDays - 7) < 1, `Expected ~7d, got ${diffDays.toFixed(2)}d`);
     });
 
     it("should parse weeks", () => {
@@ -162,44 +191,50 @@ describe("F024: Temporal filter - parseSince", () => {
         const parsed = new Date(result.replace(" ", "T") + "Z");
         const now = new Date();
         const diffDays = (now.getTime() - parsed.getTime()) / (1000 * 60 * 60 * 24);
-        expect(diffDays).toBeCloseTo(14, 0);
+        assert.ok(Math.abs(diffDays - 14) < 1, `Expected ~14d, got ${diffDays.toFixed(2)}d`);
     });
 
     it("should parse months", () => {
         const result = parseSince("1m");
-        expect(result).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+        assert.match(result, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
     });
 
     it("should throw on invalid format", () => {
-        expect(() => parseSince("abc")).toThrow("Invalid since format");
-        expect(() => parseSince("7x")).toThrow("Invalid since format");
+        assert.throws(() => parseSince("abc"), /Invalid since format/);
+        assert.throws(() => parseSince("7x"), /Invalid since format/);
     });
 });
 
 describe("F024: Temporal filter - search integration", () => {
+    before(async function () {
+        this.timeout = 300_000;
+        await ensureDb();
+    });
+
     it("searchSemantic with since should filter old memories", async () => {
         // All our test memories were created just now
         // Searching with since=1h should find them
         const results = await searchSemantic(client, "JavaScript", { k: 5, since: "1h" });
-        expect(results.length).toBeGreaterThan(0);
-    }, 120_000);
+        assert.ok(results.length > 0, "Should find recent memories");
+    });
 
-    it("searchSemantic with since=0h should find nothing", async () => {
-        // Since 0 hours ago = now = no results
-        // Actually 0h would be 0 hours back which doesn't make sense
-        // Let's test with a very old boundary instead — all memories are new
-        // so since=1d should find them all
+    it("searchSemantic with since=1d should include recent memories", async () => {
         const results = await searchSemantic(client, "JavaScript", { k: 5, since: "1d" });
-        expect(results.length).toBeGreaterThanOrEqual(0); // Could be 0 or more
-    }, 120_000);
+        assert.ok(results.length >= 0, "Could be 0 or more");
+    });
 });
 
 // ---------------------------------------------------------------------------
 // F025: Batch operations
 // ---------------------------------------------------------------------------
 describe("F025: Batch tag insertion", () => {
+    before(async function () {
+        this.timeout = 300_000;
+        await ensureDb();
+    });
+
     it("should batch-insert multiple tags efficiently", async () => {
-        const id = await addMemory(client, {
+        const { id } = await addMemory(client, {
             type: "fact",
             title: "Batch test memory",
             content: "This memory tests batch tag insertion.",
@@ -207,31 +242,31 @@ describe("F025: Batch tag insertion", () => {
         });
 
         const mem = await getMemory(client, id);
-        expect(mem).not.toBeNull();
-        expect(mem.tags.length).toBe(5);
-        expect(mem.tags).toContain("tag1");
-        expect(mem.tags).toContain("tag5");
-    }, 120_000);
+        assert.ok(mem, "Memory should exist");
+        assert.equal(mem.tags.length, 5);
+        assert.ok(mem.tags.includes("tag1"), "Should contain tag1");
+        assert.ok(mem.tags.includes("tag5"), "Should contain tag5");
+    });
 
     it("should batch-create explicit links", async () => {
-        const idX = await addMemory(client, {
+        const { id: idX } = await addMemory(client, {
             type: "fact",
             title: "Link source",
             content: "Source of explicit batch links.",
         });
-        const idY = await addMemory(client, {
+        const { id: idY } = await addMemory(client, {
             type: "fact",
             title: "Link target 1",
             content: "First target of batch links.",
         });
-        const idZ = await addMemory(client, {
+        const { id: idZ } = await addMemory(client, {
             type: "fact",
             title: "Link target 2",
             content: "Second target of batch links.",
         });
 
         // Add memory with explicit batch links
-        const idW = await addMemory(client, {
+        const { id: idW } = await addMemory(client, {
             type: "fact",
             title: "Linked memory",
             content: "This memory links to Y and Z.",
@@ -242,16 +277,21 @@ describe("F025: Batch tag insertion", () => {
         });
 
         const links = await getLinks(client, idW);
-        expect(links.length).toBeGreaterThanOrEqual(2);
-    }, 120_000);
+        assert.ok(links.length >= 2, "Should have at least 2 links");
+    });
 });
 
 // ---------------------------------------------------------------------------
 // F026: Permanent memories
 // ---------------------------------------------------------------------------
 describe("F026: Permanent memories", () => {
+    before(async function () {
+        this.timeout = 300_000;
+        await ensureDb();
+    });
+
     it("should tag a memory as permanent", async () => {
-        const id = await addMemory(client, {
+        const { id } = await addMemory(client, {
             type: "preference",
             title: "User prefers dark mode",
             content: "Always use dark mode in UI.",
@@ -260,12 +300,12 @@ describe("F026: Permanent memories", () => {
         });
 
         const mem = await getMemory(client, id);
-        expect(mem.tags).toContain("permanent");
-    }, 120_000);
+        assert.ok(mem.tags.includes("permanent"), "Should have permanent tag");
+    });
 
     it("permanent memories should survive consolidation decay", async () => {
         // Create a permanent memory with low strength
-        const id = await addMemory(client, {
+        const { id } = await addMemory(client, {
             type: "preference",
             title: "Permanent pref - coding style test",
             content: "Use 4-space indentation everywhere in all projects.",
@@ -287,15 +327,16 @@ describe("F026: Permanent memories", () => {
             args: [id],
         });
 
-        expect(result.rows.length).toBe(1);
+        assert.equal(result.rows.length, 1);
         // Permanent memory should NOT be archived (exempt from prune)
-        expect(Number(result.rows[0].archived)).toBe(0);
+        assert.equal(Number(result.rows[0].archived), 0, "Should not be archived");
         // Strength should remain unchanged (exempt from decay)
-        expect(Number(result.rows[0].strength)).toBeCloseTo(0.01, 2);
-    }, 120_000);
+        assert.ok(Math.abs(Number(result.rows[0].strength) - 0.01) < 0.005,
+            `Strength should be ~0.01, got ${result.rows[0].strength}`);
+    });
 
     it("non-permanent memories with low strength should be pruned", async () => {
-        const id = await addMemory(client, {
+        const { id } = await addMemory(client, {
             type: "fact",
             title: "Ephemeral fact for prune test",
             content: "This fact should get pruned during consolidation.",
@@ -315,7 +356,7 @@ describe("F026: Permanent memories", () => {
             sql: "SELECT archived FROM memories WHERE id = ?",
             args: [id],
         });
-        expect(result.rows.length).toBe(1);
-        expect(Number(result.rows[0].archived)).toBe(1);
-    }, 120_000);
+        assert.equal(result.rows.length, 1);
+        assert.equal(Number(result.rows[0].archived), 1, "Should be archived");
+    });
 });

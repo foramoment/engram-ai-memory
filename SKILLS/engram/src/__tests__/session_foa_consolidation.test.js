@@ -38,6 +38,9 @@ async function clearTables() {
     await client.execute("DELETE FROM memories");
     await client.execute("DELETE FROM tags");
     await client.execute("DELETE FROM sessions");
+    // Reset consolidation metadata — prevents idempotency guard from
+    // skipping boost/decay in subsequent tests that depend on a clean state.
+    await client.execute("DELETE FROM system_meta WHERE key = 'last_consolidation_at'");
     try { await client.execute("DELETE FROM sqlite_sequence"); } catch { /* */ }
 }
 
@@ -231,5 +234,26 @@ describe("consolidation.js — Sleep Consolidation", () => {
         // Now shouldConsolidate should return false (just ran)
         const { shouldRun } = await shouldConsolidate(client, 3);
         assert.equal(shouldRun, false, "Should not need consolidation right after running");
+    });
+
+    it("BUG: decay should be idempotent — running twice quickly must not double-decay", async () => {
+        await clearTables();
+        const { id } = await addMemory(client, { type: "fact", title: "Idempotent Test", content: "Verify no double decay" });
+        // Set known initial strength
+        await client.execute({ sql: "UPDATE memories SET strength = 1.0 WHERE id = ?", args: [id] });
+
+        // Run consolidation twice quickly (< 1s apart)
+        await runConsolidation(client, { decayRate: 0.95 });
+        const afterFirst = await client.execute({ sql: "SELECT strength FROM memories WHERE id = ?", args: [id] });
+        const str1 = Number(afterFirst.rows[0].strength);
+
+        await runConsolidation(client, { decayRate: 0.95 });
+        const afterSecond = await client.execute({ sql: "SELECT strength FROM memories WHERE id = ?", args: [id] });
+        const str2 = Number(afterSecond.rows[0].strength);
+
+        // If idempotent, second run should barely change anything (delta < 1%)
+        const relativeDelta = Math.abs(str2 - str1) / str1;
+        assert.ok(relativeDelta < 0.01,
+            `Second consolidation changed strength by ${(relativeDelta * 100).toFixed(2)}% (${str1} → ${str2}), should be <1% for idempotent decay`);
     });
 });

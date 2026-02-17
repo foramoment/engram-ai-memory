@@ -5,6 +5,9 @@
 
 import { embed, cosineSimilarity, vectorToBlob, blobToVector, getEmbeddingDim, rerank } from "./embeddings.js";
 
+/** Write diagnostic output to stderr, only when ENGRAM_TRACE=1 */
+const trace = (/** @type {any[]} */ ...args) => process.env.ENGRAM_TRACE === "1" && process.stderr.write(args.join(" ") + "\n");
+
 /**
  * @typedef {Object} MemoryInput
  * @property {'reflex' | 'episode' | 'fact' | 'preference' | 'decision' | 'session_summary'} type
@@ -17,6 +20,7 @@ import { embed, cosineSimilarity, vectorToBlob, blobToVector, getEmbeddingDim, r
  * @property {'manual' | 'auto' | 'migration'} [sourceType]
  * @property {boolean} [autoLink]           - Auto-discover and link related memories (default true)
  * @property {number} [autoLinkThreshold]   - Cosine similarity threshold for auto-linking (default 0.7)
+ * @property {number} [mergeThreshold]      - Cosine similarity threshold for merge-on-write (default 0.92)
  */
 
 /**
@@ -75,6 +79,10 @@ export async function addMemory(client, input) {
             sql: "UPDATE memories SET access_count = access_count + 1, last_accessed_at = datetime('now') WHERE id = ?",
             args: [existingId],
         });
+        // Apply any new tags (e.g. --permanent) even on duplicate
+        if (tags.length > 0) {
+            await applyTags(client, existingId, tags);
+        }
         return { id: existingId, status: "duplicate" };
     }
 
@@ -122,8 +130,9 @@ export async function addMemory(client, input) {
                 return { id: existingId, status: "merged", mergedInto: existingId };
             }
         }
-    } catch {
+    } catch (/** @type {any} */ err) {
         // Vector index may not be ready — skip merge check
+        trace("[engram] merge-on-write check skipped:", err?.message || String(err));
     }
 
     // --- No duplicate/merge: insert new memory ---
@@ -164,23 +173,29 @@ export async function addMemory(client, input) {
  * @param {string[]} tags
  */
 async function applyTags(client, memoryId, tags) {
-    const tagUpserts = tags.map((tag) => ({
+    const normalized = tags.map((t) => t.toLowerCase().trim());
+
+    // Batch 1: upsert all tag names
+    const tagUpserts = normalized.map((name) => ({
         sql: "INSERT OR IGNORE INTO tags (name) VALUES (?)",
-        args: [tag.toLowerCase().trim()],
+        args: [name],
     }));
     await client.batch(tagUpserts, "write");
 
-    for (const tag of tags) {
-        const normalized = tag.toLowerCase().trim();
-        const tagResult = await client.execute({
-            sql: "SELECT id FROM tags WHERE name = ?",
-            args: [normalized],
-        });
-        const tagId = Number(tagResult.rows[0].id);
-        await client.execute({
-            sql: "INSERT OR IGNORE INTO memory_tags (memory_id, tag_id) VALUES (?, ?)",
-            args: [memoryId, tagId],
-        });
+    // Batch 2: fetch all tag IDs in one query
+    const placeholders = normalized.map(() => "?").join(",");
+    const tagRows = await client.execute({
+        sql: `SELECT id, name FROM tags WHERE name IN (${placeholders})`,
+        args: normalized,
+    });
+
+    // Batch 3: link all tags to memory in one batch
+    const linkOps = tagRows.rows.map((row) => ({
+        sql: "INSERT OR IGNORE INTO memory_tags (memory_id, tag_id) VALUES (?, ?)",
+        args: [memoryId, Number(row.id)],
+    }));
+    if (linkOps.length > 0) {
+        await client.batch(linkOps, "write");
     }
 }
 
@@ -226,8 +241,9 @@ export async function autoLinkMemory(client, memoryId, embedding, threshold = 0.
         }
 
         return linked;
-    } catch {
+    } catch (/** @type {any} */ err) {
         // Vector index may not be ready — skip auto-linking
+        trace("[engram] auto-link skipped:", err?.message || String(err));
         return [];
     }
 }
@@ -409,8 +425,9 @@ export async function searchSemantic(client, query, options = {}) {
 
         const result = await client.execute({ sql, args });
         return result.rows.map((r) => rowToMemory(r));
-    } catch {
+    } catch (/** @type {any} */ err) {
         // Fallback: brute-force cosine distance
+        trace("[engram] vector_top_k failed, falling back to brute-force:", err?.message || String(err));
         return await searchSemanticBruteForce(client, queryEmbedding, options);
     }
 }
@@ -423,10 +440,11 @@ export async function searchSemantic(client, query, options = {}) {
  * @param {number} [options.k]
  * @param {string} [options.type]
  * @param {boolean} [options.includeArchived]
+ * @param {string} [options.since] - Time filter: '1h', '1d', '7d', '30d' (default: no filter)
  * @returns {Promise<Memory[]>}
  */
 async function searchSemanticBruteForce(client, queryEmbedding, options = {}) {
-    const { k = 10, type, includeArchived = false } = options;
+    const { k = 10, type, since, includeArchived = false } = options;
     const queryBlob = vectorToBlob(queryEmbedding);
 
     let sql = `SELECT id, type, title, content, importance, strength,
@@ -443,6 +461,10 @@ async function searchSemanticBruteForce(client, queryEmbedding, options = {}) {
     if (type) {
         sql += " AND type = ?";
         args.push(type);
+    }
+    if (since) {
+        sql += " AND created_at >= ?";
+        args.push(typeof since === "string" && since.match(/^\d+(h|d|w|m)$/i) ? parseSince(since) : since);
     }
 
     sql += " ORDER BY score ASC LIMIT ?"; // Lower distance = more similar
@@ -551,11 +573,18 @@ export async function searchHybrid(client, query, options = {}) {
 
         const reranked = await rerank(query, documents, { topK: k });
 
-        return reranked.map((r) => {
+        const rerankedResults = reranked.map((r) => {
             const mem = rerankCandidates[r.index].memory;
             mem.score = r.score;
             return mem;
         });
+
+        // F023: Multi-hop retrieval — also apply to reranked results
+        if (hops > 0 && rerankedResults.length > 0) {
+            return await expandWithHops(client, rerankedResults, hops, k);
+        }
+
+        return rerankedResults;
     }
 
     // Without reranking: just take top-k
@@ -587,23 +616,50 @@ async function expandWithHops(client, results, hops, maxTotal) {
 
     let currentLayer = results;
     for (let hop = 0; hop < hops && expanded.length < maxTotal; hop++) {
+        if (currentLayer.length === 0) break;
+
+        // Batch: get all linked IDs for the entire current layer in ONE query
+        const layerIds = currentLayer.map((m) => m.id);
+        const placeholders = layerIds.map(() => "?").join(",");
+        const linksResult = await client.execute({
+            sql: `SELECT source_id, target_id FROM memory_links
+                  WHERE source_id IN (${placeholders}) OR target_id IN (${placeholders})`,
+            args: [...layerIds, ...layerIds],
+        });
+
+        // Collect unique linked IDs not yet seen
+        const linkedIds = new Set();
+        for (const row of linksResult.rows) {
+            const src = Number(row.source_id);
+            const tgt = Number(row.target_id);
+            // The "other side" of each link
+            if (layerIds.includes(src) && !seen.has(tgt)) linkedIds.add(tgt);
+            if (layerIds.includes(tgt) && !seen.has(src)) linkedIds.add(src);
+        }
+
+        if (linkedIds.size === 0) break;
+
+        // Limit to available budget
+        const remaining = maxTotal - expanded.length;
+        const idsToFetch = [...linkedIds].slice(0, remaining);
+
+        // Batch: fetch all linked memories in ONE query
+        const memPlaceholders = idsToFetch.map(() => "?").join(",");
+        const memsResult = await client.execute({
+            sql: `SELECT id, type, title, content, importance, strength,
+                  access_count, last_accessed_at, created_at, updated_at,
+                  source_conversation_id, source_type, archived
+                  FROM memories WHERE id IN (${memPlaceholders}) AND archived = 0`,
+            args: idsToFetch,
+        });
+
         /** @type {Memory[]} */
         const nextLayer = [];
-
-        // Batch: get all linked IDs for current layer
-        for (const mem of currentLayer) {
-            const links = await getLinks(client, mem.id);
-            for (const link of links) {
-                if (!seen.has(link.id) && expanded.length + nextLayer.length < maxTotal) {
-                    seen.add(link.id);
-                    const linked = await getMemory(client, link.id);
-                    if (linked && !linked.archived) {
-                        // Mark as hop result with metadata
-                        linked.score = -1; // Sentinel: linked, not scored
-                        nextLayer.push(linked);
-                    }
-                }
-            }
+        for (const row of memsResult.rows) {
+            const mem = rowToMemory(row);
+            mem.score = -1; // Sentinel: linked, not scored
+            seen.add(mem.id);
+            nextLayer.push(mem);
         }
 
         expanded.push(...nextLayer);
@@ -863,10 +919,11 @@ export async function getWeakest(client, n = 10) {
  * @param {number} [threshold] - Cosine similarity threshold (default 0.90)
  * @returns {Promise<Array<{a: Memory, b: Memory, similarity: number}>>}
  */
-export async function getDuplicateCandidates(client, threshold = 0.90) {
-    const memories = await client.execute(
-        "SELECT id, type, title, content, content_embedding, importance, strength, access_count, last_accessed_at, created_at, updated_at, source_conversation_id, source_type, archived FROM memories WHERE archived = 0 AND content_embedding IS NOT NULL ORDER BY id"
-    );
+export async function getDuplicateCandidates(client, threshold = 0.90, maxMemories = 500) {
+    const memories = await client.execute({
+        sql: "SELECT id, type, title, content, content_embedding, importance, strength, access_count, last_accessed_at, created_at, updated_at, source_conversation_id, source_type, archived FROM memories WHERE archived = 0 AND content_embedding IS NOT NULL ORDER BY id LIMIT ?",
+        args: [maxMemories],
+    });
 
     if (memories.rows.length < 2) return [];
 
@@ -902,31 +959,41 @@ export async function exportMemories(client, format = "json") {
         "SELECT id, type, title, content, importance, strength, access_count, last_accessed_at, created_at, updated_at, source_conversation_id, source_type, archived FROM memories WHERE archived = 0 ORDER BY id"
     );
 
+    // Bulk-fetch all tags in one query → build a Map<memoryId, string[]>
+    const allTagsResult = await client.execute(
+        "SELECT mt.memory_id, t.name FROM memory_tags mt JOIN tags t ON t.id = mt.tag_id"
+    );
+    /** @type {Map<number, string[]>} */
+    const tagsMap = new Map();
+    for (const row of allTagsResult.rows) {
+        const mid = Number(row.memory_id);
+        if (!tagsMap.has(mid)) tagsMap.set(mid, []);
+        /** @type {string[]} */ (tagsMap.get(mid)).push(String(row.name));
+    }
+
+    // Bulk-fetch all links in one query → build a Map<memoryId, link[]>
+    const allLinksResult = await client.execute(
+        "SELECT source_id, target_id, relation FROM memory_links"
+    );
+    /** @type {Map<number, Array<{id: number, relation: string, direction: string}>>} */
+    const linksMap = new Map();
+    for (const row of allLinksResult.rows) {
+        const src = Number(row.source_id);
+        const tgt = Number(row.target_id);
+        const rel = String(row.relation);
+        // outgoing for source
+        if (!linksMap.has(src)) linksMap.set(src, []);
+        /** @type {Array<{id: number, relation: string, direction: string}>} */ (linksMap.get(src)).push({ id: tgt, relation: rel, direction: "outgoing" });
+        // incoming for target
+        if (!linksMap.has(tgt)) linksMap.set(tgt, []);
+        /** @type {Array<{id: number, relation: string, direction: string}>} */ (linksMap.get(tgt)).push({ id: src, relation: rel, direction: "incoming" });
+    }
+
     const memories = [];
     for (const row of memoriesResult.rows) {
         const mem = rowToMemory(row);
-        // Fetch tags
-        const tagsResult = await client.execute({
-            sql: "SELECT t.name FROM tags t JOIN memory_tags mt ON t.id = mt.tag_id WHERE mt.memory_id = ?",
-            args: [mem.id],
-        });
-        mem.tags = tagsResult.rows.map((r) => String(r.name));
-
-        // Fetch links
-        const linksResult = await client.execute({
-            sql: `SELECT
-                CASE WHEN source_id = ? THEN target_id ELSE source_id END as linked_id,
-                relation,
-                CASE WHEN source_id = ? THEN 'outgoing' ELSE 'incoming' END as direction
-              FROM memory_links WHERE source_id = ? OR target_id = ?`,
-            args: [mem.id, mem.id, mem.id, mem.id],
-        });
-        mem.links = linksResult.rows.map((r) => ({
-            id: Number(r.linked_id),
-            relation: String(r.relation),
-            direction: String(r.direction),
-        }));
-
+        mem.tags = tagsMap.get(mem.id) || [];
+        mem.links = linksMap.get(mem.id) || [];
         memories.push(mem);
     }
 

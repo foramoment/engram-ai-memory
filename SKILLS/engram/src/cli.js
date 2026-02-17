@@ -7,7 +7,7 @@
 import { Command } from "commander";
 import { initDb, closeDb, getMeta } from "./db.js";
 import {
-    addMemory, getMemory, deleteMemory,
+    addMemory, getMemory, updateMemory, deleteMemory,
     searchSemantic, searchFTS, searchHybrid,
     addTag, removeTag, getAllTags,
     linkMemories, getLinks,
@@ -341,6 +341,43 @@ program
                     console.log(`    ${l.direction === "outgoing" ? "→" : "←"} #${l.id} (${l.relation})`);
                 }
             }
+        }
+        await closeDb();
+    });
+
+// -- update --
+program
+    .command("update")
+    .description("Update an existing memory")
+    .argument("<id>", "Memory ID")
+    .option("-t, --title <title>", "New title")
+    .option("-c, --content <text>", "New content")
+    .option("-i, --importance <n>", "New importance 0.0-1.0")
+    .option("--type <type>", "Change memory type")
+    .action(async (id, opts) => {
+        const { client } = await initDb();
+        const memId = parseInt(id);
+        /** @type {Partial<{title: string, content: string, importance: number, type: string}>} */
+        const updates = {};
+        if (opts.title) updates.title = opts.title;
+        if (opts.content) updates.content = opts.content;
+        if (opts.importance !== undefined) updates.importance = parseFloat(opts.importance);
+        if (opts.type) updates.type = opts.type;
+
+        if (Object.keys(updates).length === 0) {
+            console.log("No updates specified. Use --title, --content, --importance, or --type.");
+            await closeDb();
+            return;
+        }
+
+        const updated = await updateMemory(client, memId, updates);
+        if (updated) {
+            console.log(`✏️  Memory #${memId} updated`);
+            for (const [key, value] of Object.entries(updates)) {
+                console.log(`   ${key}: ${String(value).substring(0, 100)}`);
+            }
+        } else {
+            console.log(`Memory #${memId} not found.`);
         }
         await closeDb();
     });
