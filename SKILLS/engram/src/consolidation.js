@@ -187,7 +187,11 @@ async function stepPrune(client, threshold, dryRun) {
 }
 
 /**
- * Step 3: Merge — find near-duplicates by cosine similarity and merge them.
+ * Step 3: Merge — find near-duplicates and merge them.
+ *
+ * Uses DiskANN vector_top_k for O(n × k) neighbor lookup instead of O(n²)
+ * brute-force pairwise comparison. Falls back to brute-force when index
+ * is unavailable.
  *
  * @param {import("@libsql/client").Client} client
  * @param {number} threshold - Cosine similarity threshold (0.92 = very similar)
@@ -195,63 +199,18 @@ async function stepPrune(client, threshold, dryRun) {
  * @returns {Promise<number>}
  */
 async function stepMerge(client, threshold, dryRun) {
-    // Get all active memories with embeddings
-    const memories = await client.execute(
-        "SELECT id, type, title, content, content_embedding, importance, strength, access_count FROM memories WHERE archived = 0 AND content_embedding IS NOT NULL ORDER BY id"
-    );
-
-    if (memories.rows.length < 2) return 0;
-
-    // Parse embeddings
-    const parsedMemories = memories.rows.map((r) => ({
-        id: Number(r.id),
-        type: String(r.type),
-        title: String(r.title),
-        content: String(r.content),
-        embedding: r.content_embedding ? blobToVector(/** @type {Uint8Array} */(/** @type {unknown} */(r.content_embedding))) : null,
-        importance: Number(r.importance),
-        strength: Number(r.strength),
-        accessCount: Number(r.access_count),
-    }));
-
-    // Find duplicate pairs (O(n²) but acceptable for typical memory sizes <1000)
-    /** @type {Array<{keep: typeof parsedMemories[0], remove: typeof parsedMemories[0], similarity: number}>} */
-    const duplicates = [];
-    const toRemove = new Set();
-
-    for (let i = 0; i < parsedMemories.length; i++) {
-        if (toRemove.has(parsedMemories[i].id)) continue;
-        if (!parsedMemories[i].embedding) continue;
-
-        for (let j = i + 1; j < parsedMemories.length; j++) {
-            if (toRemove.has(parsedMemories[j].id)) continue;
-            if (!parsedMemories[j].embedding) continue;
-            if (parsedMemories[i].type !== parsedMemories[j].type) continue;
-
-            const sim = cosineSimilarity(
-        /** @type {Float32Array} */(parsedMemories[i].embedding),
-        /** @type {Float32Array} */(parsedMemories[j].embedding)
-            );
-
-            if (sim >= threshold) {
-                // Keep the one with higher importance or more accesses
-                const scoreI = parsedMemories[i].importance + parsedMemories[i].accessCount * 0.1;
-                const scoreJ = parsedMemories[j].importance + parsedMemories[j].accessCount * 0.1;
-
-                if (scoreI >= scoreJ) {
-                    duplicates.push({ keep: parsedMemories[i], remove: parsedMemories[j], similarity: sim });
-                    toRemove.add(parsedMemories[j].id);
-                } else {
-                    duplicates.push({ keep: parsedMemories[j], remove: parsedMemories[i], similarity: sim });
-                    toRemove.add(parsedMemories[i].id);
-                }
-            }
-        }
+    // Try DiskANN path first
+    let duplicates;
+    try {
+        duplicates = await _findMergeCandidatesDiskANN(client, threshold);
+    } catch (/** @type {any} */ err) {
+        trace("[engram] DiskANN merge-scan failed, falling back to brute-force:", err?.message || String(err));
+        duplicates = await _findMergeCandidatesBruteForce(client, threshold);
     }
 
     if (dryRun) return duplicates.length;
 
-    // Merge duplicates
+    // Execute merges
     for (const dup of duplicates) {
         // Merge content: append unique parts from removed memory
         const mergedContent = `${dup.keep.content}\n\n[Merged from: ${dup.remove.title}]\n${dup.remove.content}`;
@@ -288,6 +247,146 @@ async function stepMerge(client, threshold, dryRun) {
     }
 
     return duplicates.length;
+}
+
+/**
+ * @typedef {Object} MergeCandidate
+ * @property {{id: number, title: string, content: string, importance: number, strength: number, accessCount: number}} keep
+ * @property {{id: number, title: string, content: string, importance: number, strength: number, accessCount: number}} remove
+ * @property {number} similarity
+ */
+
+/**
+ * DiskANN-accelerated merge candidate detection — O(n × k).
+ * @param {import("@libsql/client").Client} client
+ * @param {number} threshold
+ * @returns {Promise<MergeCandidate[]>}
+ */
+async function _findMergeCandidatesDiskANN(client, threshold) {
+    const memories = await client.execute(
+        "SELECT id, type, title, content, content_embedding, importance, strength, access_count FROM memories WHERE archived = 0 AND content_embedding IS NOT NULL ORDER BY id"
+    );
+
+    if (memories.rows.length < 2) return [];
+
+    // Build lookup map
+    /** @type {Map<number, {id: number, type: string, title: string, content: string, importance: number, strength: number, accessCount: number, embedding: any}>} */
+    const memMap = new Map();
+    for (const r of memories.rows) {
+        memMap.set(Number(r.id), {
+            id: Number(r.id),
+            type: String(r.type),
+            title: String(r.title),
+            content: String(r.content),
+            importance: Number(r.importance),
+            strength: Number(r.strength),
+            accessCount: Number(r.access_count),
+            embedding: r.content_embedding,
+        });
+    }
+
+    const neighborsK = 4; // Fewer needed since threshold is higher (0.92)
+    /** @type {MergeCandidate[]} */
+    const duplicates = [];
+    const toRemove = new Set();
+
+    for (const [id, mem] of memMap) {
+        if (toRemove.has(id)) continue;
+
+        const neighbors = await client.execute({
+            sql: `SELECT m.id, m.type, v.distance as dist
+                  FROM vector_top_k('memories_vec_idx', vector(?), ?) v
+                  JOIN memories m ON m.rowid = v.id
+                  WHERE m.id != ? AND m.archived = 0 AND m.type = ?`,
+            args: [mem.embedding, neighborsK, id, mem.type],
+        });
+
+        for (const neighbor of neighbors.rows) {
+            const neighborId = Number(neighbor.id);
+            if (toRemove.has(neighborId)) continue;
+
+            const similarity = 1 - Number(neighbor.dist);
+            if (similarity < threshold) continue;
+
+            const other = memMap.get(neighborId);
+            if (!other) continue;
+
+            // Keep the one with higher importance or more accesses
+            const scoreA = mem.importance + mem.accessCount * 0.1;
+            const scoreB = other.importance + other.accessCount * 0.1;
+
+            if (scoreA >= scoreB) {
+                duplicates.push({ keep: mem, remove: other, similarity });
+                toRemove.add(neighborId);
+            } else {
+                duplicates.push({ keep: other, remove: mem, similarity });
+                toRemove.add(id);
+                break; // This memory is being removed, skip to next
+            }
+        }
+    }
+
+    return duplicates;
+}
+
+/**
+ * Brute-force O(n²) merge candidate detection — fallback.
+ * @param {import("@libsql/client").Client} client
+ * @param {number} threshold
+ * @returns {Promise<MergeCandidate[]>}
+ */
+async function _findMergeCandidatesBruteForce(client, threshold) {
+    const memories = await client.execute(
+        "SELECT id, type, title, content, content_embedding, importance, strength, access_count FROM memories WHERE archived = 0 AND content_embedding IS NOT NULL ORDER BY id"
+    );
+
+    if (memories.rows.length < 2) return [];
+
+    const parsedMemories = memories.rows.map((r) => ({
+        id: Number(r.id),
+        type: String(r.type),
+        title: String(r.title),
+        content: String(r.content),
+        embedding: r.content_embedding ? blobToVector(/** @type {Uint8Array} */(/** @type {unknown} */(r.content_embedding))) : null,
+        importance: Number(r.importance),
+        strength: Number(r.strength),
+        accessCount: Number(r.access_count),
+    }));
+
+    /** @type {MergeCandidate[]} */
+    const duplicates = [];
+    const toRemove = new Set();
+
+    for (let i = 0; i < parsedMemories.length; i++) {
+        if (toRemove.has(parsedMemories[i].id)) continue;
+        if (!parsedMemories[i].embedding) continue;
+
+        for (let j = i + 1; j < parsedMemories.length; j++) {
+            if (toRemove.has(parsedMemories[j].id)) continue;
+            if (!parsedMemories[j].embedding) continue;
+            if (parsedMemories[i].type !== parsedMemories[j].type) continue;
+
+            const sim = cosineSimilarity(
+        /** @type {Float32Array} */(parsedMemories[i].embedding),
+        /** @type {Float32Array} */(parsedMemories[j].embedding)
+            );
+
+            if (sim >= threshold) {
+                const scoreI = parsedMemories[i].importance + parsedMemories[i].accessCount * 0.1;
+                const scoreJ = parsedMemories[j].importance + parsedMemories[j].accessCount * 0.1;
+
+                if (scoreI >= scoreJ) {
+                    duplicates.push({ keep: parsedMemories[i], remove: parsedMemories[j], similarity: sim });
+                    toRemove.add(parsedMemories[j].id);
+                } else {
+                    duplicates.push({ keep: parsedMemories[j], remove: parsedMemories[i], similarity: sim });
+                    toRemove.add(parsedMemories[i].id);
+                }
+            }
+        }
+    }
+
+    return duplicates;
 }
 
 /**

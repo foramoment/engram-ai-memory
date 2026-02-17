@@ -915,13 +915,112 @@ export async function getWeakest(client, n = 10) {
 
 /**
  * Get near-duplicate memory pairs by cosine similarity.
+ *
+ * Uses DiskANN vector_top_k for O(n log n) performance instead of O(n²)
+ * brute-force. For each memory, queries the ANN index for nearest neighbors
+ * of the same type and collects pairs above the threshold.
+ *
+ * Falls back to brute-force when the vector index is unavailable.
+ *
  * @param {import("@libsql/client").Client} client
  * @param {number} [threshold] - Cosine similarity threshold (default 0.90)
+ * @param {number} [maxMemories] - Max memories to scan (default 500)
  * @returns {Promise<Array<{a: Memory, b: Memory, similarity: number}>>}
  */
 export async function getDuplicateCandidates(client, threshold = 0.90, maxMemories = 500) {
+    // Try DiskANN-accelerated path first
+    try {
+        return await _getDuplicatesDiskANN(client, threshold, maxMemories);
+    } catch (/** @type {any} */ err) {
+        trace("[engram] DiskANN dup-scan failed, falling back to brute-force:", err?.message || String(err));
+        return await _getDuplicatesBruteForce(client, threshold, maxMemories);
+    }
+}
+
+/**
+ * DiskANN-accelerated duplicate detection — O(n × k) where k = neighbors per query.
+ * @param {import("@libsql/client").Client} client
+ * @param {number} threshold
+ * @param {number} maxMemories
+ * @returns {Promise<Array<{a: Memory, b: Memory, similarity: number}>>}
+ */
+async function _getDuplicatesDiskANN(client, threshold, maxMemories) {
     const memories = await client.execute({
-        sql: "SELECT id, type, title, content, content_embedding, importance, strength, access_count, last_accessed_at, created_at, updated_at, source_conversation_id, source_type, archived FROM memories WHERE archived = 0 AND content_embedding IS NOT NULL ORDER BY id LIMIT ?",
+        sql: `SELECT id, type, title, content, content_embedding, importance, strength,
+              access_count, last_accessed_at, created_at, updated_at,
+              source_conversation_id, source_type, archived
+              FROM memories WHERE archived = 0 AND content_embedding IS NOT NULL
+              ORDER BY id LIMIT ?`,
+        args: [maxMemories],
+    });
+
+    if (memories.rows.length < 2) return [];
+
+    // Build a lookup map for fast memory retrieval by ID
+    /** @type {Map<number, Memory>} */
+    const memoryMap = new Map();
+    for (const row of memories.rows) {
+        const mem = rowToMemory(row);
+        memoryMap.set(mem.id, mem);
+    }
+
+    // For each memory, query DiskANN for k nearest neighbors
+    // k=6 gives us enough candidates after filtering self + other types
+    const neighborsK = 6;
+    /** @type {Map<string, {a: Memory, b: Memory, similarity: number}>} */
+    const pairMap = new Map(); // Dedup pairs using "minId-maxId" key
+
+    for (const row of memories.rows) {
+        const id = Number(row.id);
+        const type = String(row.type);
+        const embeddingBlob = row.content_embedding;
+
+        const neighbors = await client.execute({
+            sql: `SELECT m.id, m.type, v.distance as dist
+                  FROM vector_top_k('memories_vec_idx', vector(?), ?) v
+                  JOIN memories m ON m.rowid = v.id
+                  WHERE m.id != ? AND m.archived = 0 AND m.type = ?`,
+            args: [embeddingBlob, neighborsK, id, type],
+        });
+
+        for (const neighbor of neighbors.rows) {
+            const neighborId = Number(neighbor.id);
+            const similarity = 1 - Number(neighbor.dist);
+
+            if (similarity >= threshold && memoryMap.has(neighborId)) {
+                // Canonical key ensures each pair appears only once
+                const minId = Math.min(id, neighborId);
+                const maxId = Math.max(id, neighborId);
+                const key = `${minId}-${maxId}`;
+
+                if (!pairMap.has(key)) {
+                    pairMap.set(key, {
+                        a: /** @type {Memory} */ (memoryMap.get(minId)),
+                        b: /** @type {Memory} */ (memoryMap.get(maxId)),
+                        similarity,
+                    });
+                }
+            }
+        }
+    }
+
+    return [...pairMap.values()].sort((x, y) => y.similarity - x.similarity);
+}
+
+/**
+ * Brute-force O(n²) duplicate detection — fallback when no vector index.
+ * @param {import("@libsql/client").Client} client
+ * @param {number} threshold
+ * @param {number} maxMemories
+ * @returns {Promise<Array<{a: Memory, b: Memory, similarity: number}>>}
+ */
+async function _getDuplicatesBruteForce(client, threshold, maxMemories) {
+    const memories = await client.execute({
+        sql: `SELECT id, type, title, content, content_embedding, importance, strength,
+              access_count, last_accessed_at, created_at, updated_at,
+              source_conversation_id, source_type, archived
+              FROM memories WHERE archived = 0 AND content_embedding IS NOT NULL
+              ORDER BY id LIMIT ?`,
         args: [maxMemories],
     });
 

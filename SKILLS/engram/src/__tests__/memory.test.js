@@ -10,7 +10,7 @@ import {
     searchSemantic, searchFTS, searchHybrid,
     addTag, removeTag, getMemoriesByTag, getAllTags,
     linkMemories, getLinks, findRelated,
-    logAccess, getStats, exportMemories,
+    logAccess, getStats, exportMemories, getDuplicateCandidates,
 } from "../memory.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -540,3 +540,76 @@ describe("memory.js — findRelated", () => {
 
     after(() => cleanupAll());
 });
+
+// ---------------------------------------------------------------------------
+// getDuplicateCandidates — DiskANN-accelerated
+// ---------------------------------------------------------------------------
+
+describe("memory.js — getDuplicateCandidates (DiskANN)", () => {
+    before(async () => {
+        await clearTables();
+    });
+
+    it("should detect near-duplicate pairs of the same type", async () => {
+        // Two very similar reflex memories
+        await addMemory(client, {
+            type: "reflex", title: "LibSQL vector index error",
+            content: "vector_top_k throws when DiskANN index is not ready. Always wrap in try/catch.",
+        });
+        await addMemory(client, {
+            type: "reflex", title: "LibSQL DiskANN index failure",
+            content: "vector_top_k function fails if DiskANN vector index is not initialized. Use try/catch.",
+            mergeThreshold: 0.99, // Very high threshold to prevent merge-on-write
+        });
+
+        // A completely different memory
+        await addMemory(client, {
+            type: "reflex", title: "PowerShell path escaping",
+            content: "Always use single quotes for paths in PowerShell to avoid variable expansion.",
+        });
+
+        const pairs = await getDuplicateCandidates(client, 0.80);
+        // Should find the two similar LibSQL memories as duplicates
+        assert.ok(pairs.length >= 1, `Expected at least 1 duplicate pair, got ${pairs.length}`);
+
+        // Each pair should have similarity above threshold
+        for (const pair of pairs) {
+            assert.ok(pair.similarity >= 0.80, `Similarity ${pair.similarity} should be >= 0.80`);
+            assert.ok(pair.a.type === pair.b.type, "Duplicate pair must be same type");
+        }
+    });
+
+    it("should not match memories of different types", async () => {
+        await clearTables();
+
+        // Same content but different types → should not be paired
+        await addMemory(client, {
+            type: "reflex", title: "JavaScript async patterns",
+            content: "Always use async/await instead of raw promises for readability.",
+        });
+        await addMemory(client, {
+            type: "fact", title: "JavaScript async patterns",
+            content: "Always use async/await instead of raw promises for readability.",
+            mergeThreshold: 0.99,
+        });
+
+        const pairs = await getDuplicateCandidates(client, 0.90);
+        // Should find no pairs since types differ
+        assert.equal(pairs.length, 0, "Different types should not be paired");
+    });
+
+    it("should return empty for fewer than 2 memories", async () => {
+        await clearTables();
+
+        await addMemory(client, {
+            type: "fact", title: "Solo memory",
+            content: "Only one memory in the database.",
+        });
+
+        const pairs = await getDuplicateCandidates(client, 0.90);
+        assert.equal(pairs.length, 0, "Fewer than 2 memories should return no pairs");
+    });
+
+    after(() => cleanupAll());
+});
+
