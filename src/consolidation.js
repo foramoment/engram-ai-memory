@@ -72,6 +72,7 @@ export async function runConsolidation(client, options = {}) {
     console.log(`[engram]   Merge: ${merged} duplicates merged`);
 
     // Step 4: Extract (placeholder — requires LLM)
+    /** @type {string[]} */
     const patterns = [];
     // TODO: Implement LLM-based pattern extraction via LM Studio
 
@@ -166,7 +167,7 @@ async function stepMerge(client, threshold, dryRun) {
         type: String(r.type),
         title: String(r.title),
         content: String(r.content),
-        embedding: r.content_embedding ? blobToVector(/** @type {Uint8Array} */(r.content_embedding)) : null,
+        embedding: r.content_embedding ? blobToVector(/** @type {Uint8Array} */(/** @type {unknown} */(r.content_embedding))) : null,
         importance: Number(r.importance),
         strength: Number(r.strength),
         accessCount: Number(r.access_count),

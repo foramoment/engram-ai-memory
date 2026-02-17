@@ -4,6 +4,7 @@
  */
 
 import { embed, vectorToBlob } from "./embeddings.js";
+import { shouldConsolidate, runConsolidation } from "./consolidation.js";
 
 /**
  * Start a new session.
@@ -128,4 +129,37 @@ export async function listSessions(client, options = {}) {
         started_at: String(r.started_at),
         ended_at: r.ended_at ? String(r.ended_at) : null,
     }));
+}
+
+/**
+ * Start a session and check if consolidation is overdue.
+ * Returns consolidation suggestion or auto-runs if configured.
+ *
+ * @param {import("@libsql/client").Client} client
+ * @param {string} sessionId
+ * @param {object} [options]
+ * @param {string} [options.title]
+ * @param {boolean} [options.autoConsolidate] - Auto-run consolidation if overdue
+ * @param {number} [options.intervalDays] - Days between consolidations (default 3)
+ * @returns {Promise<{consolidationNeeded: boolean, daysSinceLast: number | null, autoRan: boolean}>}
+ */
+export async function startSessionWithConsolidationCheck(client, sessionId, options = {}) {
+    const { title, autoConsolidate = false, intervalDays = 3 } = options;
+
+    // Start the session
+    await startSession(client, sessionId, title);
+
+    // Check consolidation status
+    const { shouldRun, daysSinceLast } = await shouldConsolidate(client, intervalDays);
+
+    let autoRan = false;
+    if (shouldRun && autoConsolidate) {
+        console.log(`[engram] 💤 Auto-consolidation triggered (${daysSinceLast === null ? "never run" : daysSinceLast.toFixed(1) + " days ago"})`);
+        await runConsolidation(client);
+        autoRan = true;
+    } else if (shouldRun) {
+        console.log(`[engram] 💡 Consolidation suggested — ${daysSinceLast === null ? "never run" : daysSinceLast.toFixed(1) + " days since last run"}`);
+    }
+
+    return { consolidationNeeded: shouldRun, daysSinceLast, autoRan };
 }

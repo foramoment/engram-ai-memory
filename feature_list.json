@@ -4,7 +4,7 @@
         "description": "Cognitive memory system for AI agents — LibSQL + BGE-M3 + sleep consolidation",
         "stack": "Node.js 20+, LibSQL, Transformers.js v4, Commander.js",
         "created_at": "2026-02-17T02:57:00Z",
-        "last_updated": "2026-02-17T02:57:00Z"
+        "last_updated": "2026-02-17T03:55:00Z"
     },
     "features": [
         {
@@ -18,7 +18,7 @@
                 "npm install completes without errors",
                 "Git repository initialized with .gitignore"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -33,7 +33,7 @@
                 "Vector index created (or graceful fallback)",
                 "Unit tests pass for db.js"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -48,7 +48,7 @@
                 "Lazy initialization — model loaded on first call",
                 "Unit tests pass for embeddings.js"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -63,7 +63,7 @@
                 "deleteMemory(id) cascades to tags, links, access_log",
                 "Unit tests pass for all CRUD operations"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -77,7 +77,7 @@
                 "Optional type filter works",
                 "Unit tests pass with real embeddings"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -91,7 +91,7 @@
                 "Optional type filter works",
                 "Unit tests pass"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -105,7 +105,7 @@
                 "Deduplication of results",
                 "Unit tests pass"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -120,7 +120,7 @@
                 "Relation types validated: related_to, caused_by, evolved_from, contradicts, supersedes",
                 "Unit tests pass"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -135,7 +135,7 @@
                 "getAllTags() returns tag list with counts",
                 "Unit tests pass"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -150,7 +150,7 @@
                 "listSessions() with date range filter",
                 "Unit tests pass"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -165,7 +165,7 @@
                 "Output formatted as agent-ready context block",
                 "Unit tests pass"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -179,7 +179,7 @@
                 "Bulk access stats query works",
                 "Unit tests pass"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -196,7 +196,7 @@
                 "last_consolidation_at tracked in system_meta",
                 "Unit tests pass for each step"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -216,7 +216,7 @@
                 "All commands have --help",
                 "Unit tests pass for CLI argument parsing"
             ],
-            "passes": false,
+            "passes": true,
             "notes": ""
         },
         {
@@ -238,7 +238,7 @@
         {
             "id": "F016",
             "category": "integration",
-            "priority": "medium",
+            "priority": "low",
             "description": "Skill integration: SKILL.md for Antigravity",
             "steps": [
                 "skill/SKILL.md created with correct frontmatter",
@@ -249,7 +249,7 @@
                 "Manual testing in Antigravity works"
             ],
             "passes": false,
-            "notes": ""
+            "notes": "Deprioritized — implement last after everything is tested"
         },
         {
             "id": "F017",

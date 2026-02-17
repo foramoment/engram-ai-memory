@@ -240,6 +240,7 @@ export async function searchSemantic(client, query, options = {}) {
                FROM vector_top_k('memories_vec_idx', vector(?), ?) v
                JOIN memories m ON m.rowid = v.id
                WHERE 1=1`;
+        /** @type {any[]} */
         const args = [queryBlob, k * 2]; // Fetch extra to account for filters
 
         if (!includeArchived) {
@@ -279,6 +280,7 @@ async function searchSemanticBruteForce(client, queryEmbedding, options = {}) {
              source_conversation_id, source_type, archived,
              vector_distance_cos(content_embedding, vector(?)) as score
              FROM memories WHERE content_embedding IS NOT NULL`;
+    /** @type {any[]} */
     const args = [queryBlob];
 
     if (!includeArchived) {
@@ -315,6 +317,7 @@ export async function searchFTS(client, query, options = {}) {
              FROM memories_fts fts
              JOIN memories m ON m.id = fts.rowid
              WHERE memories_fts MATCH ? AND m.archived = 0`;
+    /** @type {any[]} */
     const args = [query];
 
     if (type) {
@@ -564,9 +567,9 @@ export async function findRelated(client, memoryId, k = 5) {
  * Log a memory access (for forgetting curves).
  * @param {import("@libsql/client").Client} client
  * @param {number} memoryId
- * @param {string} [sessionId]
- * @param {string} [query]
- * @param {number} [relevanceScore]
+ * @param {string | null} [sessionId]
+ * @param {string | null} [query]
+ * @param {number | null} [relevanceScore]
  */
 export async function logAccess(client, memoryId, sessionId = null, query = null, relevanceScore = null) {
     await client.execute({
@@ -604,6 +607,117 @@ export async function getStats(client) {
         totalLinks: Number(linksResult.rows[0].total),
         avgStrength: Number(avgStrengthResult.rows[0].avg) || 0,
     };
+}
+
+/**
+ * Get weakest memories (candidates for pruning).
+ * @param {import("@libsql/client").Client} client
+ * @param {number} [n] - Number of results (default 10)
+ * @returns {Promise<Memory[]>}
+ */
+export async function getWeakest(client, n = 10) {
+    const result = await client.execute({
+        sql: `SELECT id, type, title, content, importance, strength,
+              access_count, last_accessed_at, created_at, updated_at,
+              source_conversation_id, source_type, archived
+              FROM memories WHERE archived = 0
+              ORDER BY strength ASC LIMIT ?`,
+        args: [n],
+    });
+    return result.rows.map((r) => rowToMemory(r));
+}
+
+/**
+ * Get near-duplicate memory pairs by cosine similarity.
+ * @param {import("@libsql/client").Client} client
+ * @param {number} [threshold] - Cosine similarity threshold (default 0.90)
+ * @returns {Promise<Array<{a: Memory, b: Memory, similarity: number}>>}
+ */
+export async function getDuplicateCandidates(client, threshold = 0.90) {
+    const memories = await client.execute(
+        "SELECT id, type, title, content, content_embedding, importance, strength, access_count, last_accessed_at, created_at, updated_at, source_conversation_id, source_type, archived FROM memories WHERE archived = 0 AND content_embedding IS NOT NULL ORDER BY id"
+    );
+
+    if (memories.rows.length < 2) return [];
+
+    const parsed = memories.rows.map((r) => ({
+        memory: rowToMemory(r),
+        embedding: blobToVector(/** @type {Uint8Array} */(/** @type {unknown} */(r.content_embedding))),
+    }));
+
+    /** @type {Array<{a: Memory, b: Memory, similarity: number}>} */
+    const pairs = [];
+
+    for (let i = 0; i < parsed.length; i++) {
+        for (let j = i + 1; j < parsed.length; j++) {
+            if (parsed[i].memory.type !== parsed[j].memory.type) continue;
+            const sim = cosineSimilarity(parsed[i].embedding, parsed[j].embedding);
+            if (sim >= threshold) {
+                pairs.push({ a: parsed[i].memory, b: parsed[j].memory, similarity: sim });
+            }
+        }
+    }
+
+    return pairs.sort((x, y) => y.similarity - x.similarity);
+}
+
+/**
+ * Export all active memories with tags and links.
+ * @param {import("@libsql/client").Client} client
+ * @param {'json' | 'md'} [format] - Output format (default 'json')
+ * @returns {Promise<string>}
+ */
+export async function exportMemories(client, format = "json") {
+    const memoriesResult = await client.execute(
+        "SELECT id, type, title, content, importance, strength, access_count, last_accessed_at, created_at, updated_at, source_conversation_id, source_type, archived FROM memories WHERE archived = 0 ORDER BY id"
+    );
+
+    const memories = [];
+    for (const row of memoriesResult.rows) {
+        const mem = rowToMemory(row);
+        // Fetch tags
+        const tagsResult = await client.execute({
+            sql: "SELECT t.name FROM tags t JOIN memory_tags mt ON t.id = mt.tag_id WHERE mt.memory_id = ?",
+            args: [mem.id],
+        });
+        mem.tags = tagsResult.rows.map((r) => String(r.name));
+
+        // Fetch links
+        const linksResult = await client.execute({
+            sql: `SELECT
+                CASE WHEN source_id = ? THEN target_id ELSE source_id END as linked_id,
+                relation,
+                CASE WHEN source_id = ? THEN 'outgoing' ELSE 'incoming' END as direction
+              FROM memory_links WHERE source_id = ? OR target_id = ?`,
+            args: [mem.id, mem.id, mem.id, mem.id],
+        });
+        mem.links = linksResult.rows.map((r) => ({
+            id: Number(r.linked_id),
+            relation: String(r.relation),
+            direction: String(r.direction),
+        }));
+
+        memories.push(mem);
+    }
+
+    if (format === "md") {
+        const lines = [`# Engram Memory Export\n`, `> ${memories.length} memories | ${new Date().toISOString()}\n`];
+        for (const mem of memories) {
+            lines.push(`## [${mem.type}] ${mem.title}`);
+            lines.push(`> ID: ${mem.id} | Importance: ${mem.importance} | Strength: ${mem.strength.toFixed(3)} | Accesses: ${mem.access_count}`);
+            if (mem.tags?.length) lines.push(`> Tags: ${mem.tags.join(", ")}`);
+            if (mem.links?.length) {
+                lines.push(`> Links: ${mem.links.map((l) => `${l.direction === "outgoing" ? "→" : "←"} #${l.id} (${l.relation})`).join(", ")}`);
+            }
+            lines.push("");
+            lines.push(mem.content);
+            lines.push("\n---\n");
+        }
+        return lines.join("\n");
+    }
+
+    // JSON
+    return JSON.stringify(memories, null, 2);
 }
 
 // ---------------------------------------------------------------------------

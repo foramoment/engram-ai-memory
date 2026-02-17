@@ -11,12 +11,14 @@ import {
     searchSemantic, searchFTS, searchHybrid,
     addTag, removeTag, getAllTags,
     linkMemories, getLinks,
-    getStats,
+    getStats, getWeakest, getDuplicateCandidates,
+    exportMemories,
 } from "./memory.js";
-import { startSession, endSession, listSessions } from "./session.js";
+import { startSession, endSession, listSessions, startSessionWithConsolidationCheck } from "./session.js";
 import { recall, formatRecallContext } from "./foa.js";
 import { runConsolidation, shouldConsolidate, getConsolidationPreview } from "./consolidation.js";
 import { getDevice, isInitialized } from "./embeddings.js";
+import { migrateFromSkill } from "./migrate.js";
 
 const program = new Command();
 
@@ -142,10 +144,17 @@ sessionCmd
     .command("start")
     .argument("<id>", "Session ID")
     .option("-t, --title <title>", "Session title")
+    .option("--auto-consolidate", "Auto-run sleep consolidation if overdue")
     .action(async (id, opts) => {
         const { client } = await initDb();
-        await startSession(client, id, opts.title);
+        const result = await startSessionWithConsolidationCheck(client, id, {
+            title: opts.title,
+            autoConsolidate: opts.autoConsolidate || false,
+        });
         console.log(`📎 Session "${id}" started`);
+        if (result.autoRan) {
+            console.log(`💤 Auto-consolidation completed`);
+        }
         await closeDb();
     });
 
@@ -250,50 +259,19 @@ program
 // -- export --
 program
     .command("export")
-    .description("Export memories to file")
+    .description("Export memories to file (with tags and links)")
     .option("-f, --format <fmt>", "Format: json | md", "json")
     .option("-o, --output <path>", "Output file path")
     .action(async (opts) => {
         const { client } = await initDb();
-        const result = await client.execute(
-            "SELECT id, type, title, content, importance, strength, created_at, updated_at FROM memories WHERE archived = 0 ORDER BY id"
-        );
+        const output = await exportMemories(client, opts.format);
 
-        if (opts.format === "json") {
-            const data = result.rows.map((r) => ({
-                id: Number(r.id),
-                type: String(r.type),
-                title: String(r.title),
-                content: String(r.content),
-                importance: Number(r.importance),
-                strength: Number(r.strength),
-                created_at: String(r.created_at),
-            }));
-            const json = JSON.stringify(data, null, 2);
-            if (opts.output) {
-                const { writeFileSync } = await import("node:fs");
-                writeFileSync(opts.output, json);
-                console.log(`📦 Exported ${data.length} memories to ${opts.output}`);
-            } else {
-                console.log(json);
-            }
+        if (opts.output) {
+            const { writeFileSync } = await import("node:fs");
+            writeFileSync(opts.output, output);
+            console.log(`📦 Exported memories to ${opts.output}`);
         } else {
-            const lines = ["# Engram Memory Export\n"];
-            for (const r of result.rows) {
-                lines.push(`## [${r.type}] ${r.title}`);
-                lines.push(`> ID: ${r.id} | Importance: ${r.importance} | Strength: ${Number(r.strength).toFixed(3)}`);
-                lines.push("");
-                lines.push(String(r.content));
-                lines.push("\n---\n");
-            }
-            const md = lines.join("\n");
-            if (opts.output) {
-                const { writeFileSync } = await import("node:fs");
-                writeFileSync(opts.output, md);
-                console.log(`📦 Exported ${result.rows.length} memories to ${opts.output}`);
-            } else {
-                console.log(md);
-            }
+            console.log(output);
         }
         await closeDb();
     });
@@ -384,6 +362,64 @@ tagCmd
                 console.log(`  ${t.name} (${t.count})`);
             }
         }
+        await closeDb();
+    });
+// -- diagnostics --
+program
+    .command("diagnostics")
+    .description("Show memory diagnostics (weakest, duplicates)")
+    .option("-n, --limit <n>", "Number of weakest to show", "10")
+    .option("--dup-threshold <n>", "Duplicate similarity threshold", "0.90")
+    .action(async (opts) => {
+        const { client } = await initDb();
+        const weakest = await getWeakest(client, parseInt(opts.limit));
+        const duplicates = await getDuplicateCandidates(client, parseFloat(opts.dupThreshold));
+
+        console.log("\n🔬 Memory Diagnostics\n");
+
+        console.log(`  Weakest memories (${weakest.length}):`);
+        for (const m of weakest) {
+            console.log(`    #${m.id} [${m.type}] ${m.title} — strength: ${m.strength.toFixed(3)}, accesses: ${m.access_count}`);
+        }
+
+        console.log(`\n  Duplicate candidates (threshold ≥ ${opts.dupThreshold}):`);
+        if (duplicates.length === 0) {
+            console.log("    No near-duplicates found.");
+        } else {
+            for (const d of duplicates) {
+                console.log(`    #${d.a.id} ↔ #${d.b.id} (${(d.similarity * 100).toFixed(1)}%) — "${d.a.title}" / "${d.b.title}"`);
+            }
+        }
+        console.log();
+        await closeDb();
+    });
+// -- migrate --
+program
+    .command("migrate")
+    .description("Import memories from Persistent Memory skill artifacts")
+    .argument("<sourceDir>", "Path to artifacts directory (reflexes.md, episodes.md, etc.)")
+    .option("--dry-run", "Parse and count without inserting")
+    .option("--no-link", "Skip automatic project linking")
+    .action(async (sourceDir, opts) => {
+        const { client } = await initDb();
+        console.log(`\n📥 Migrating from ${sourceDir}...\n`);
+
+        const result = await migrateFromSkill(client, sourceDir, {
+            dryRun: opts.dryRun,
+            linkProjects: opts.link !== false,
+        });
+
+        console.log(`\n📥 Migration ${opts.dryRun ? "preview" : "complete"}:`);
+        console.log(`  Reflexes:    ${result.reflexes}`);
+        console.log(`  Episodes:    ${result.episodes}`);
+        console.log(`  Preferences: ${result.preferences}`);
+        console.log(`  Projects:    ${result.projects}`);
+        console.log(`  Total:       ${result.total}`);
+        console.log(`  Links:       ${result.links}`);
+        if (result.errors.length > 0) {
+            console.log(`  Errors:      ${result.errors.length}`);
+        }
+        console.log();
         await closeDb();
     });
 
