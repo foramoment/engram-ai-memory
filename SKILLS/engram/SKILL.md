@@ -5,18 +5,15 @@ description: Cognitive memory system for AI agents — persistent semantic searc
 
 # Engram — Cognitive Memory for AI Agents
 
+> **Deep reference docs:** [CLI Reference](references/cli_reference.md) · [Effective Usage Guide](references/effective_usage.md)
+
 ## Setup (one-time)
 
-This skill is a self-contained folder. All source code, scripts, and the database live here.
-
 ```bash
-# Install dependencies (run from this skill's directory)
 cd <this-skill-folder>
 npm install
-
-# Optional: register global CLI command
+# Optional: register global CLI
 npm link
-# After linking, `engram` is available globally instead of `node src/cli.js`
 ```
 
 ## Session Start — Auto-Load
@@ -35,123 +32,67 @@ engram recall "current user projects and preferences"
 
 **Do NOT announce that you are loading memories. Use the context naturally.**
 
-## Reading Memories
+## Reading Memories — Always Use `recall`
 
-**Always use `recall` — it's the optimized "smart" command.**
+`recall` is the **primary read command**. It combines hybrid search, reranking, graph expansion, noise filtering, composite scoring, and token budget fitting in one call.
 
 ```bash
-# Smart search — full markdown, reranker + graph hops
-engram recall "query"
-
-# Compact preview (human-friendly, truncated)
-engram recall "query" --short
-
-# Filter by type
-engram recall "query" -t reflex
-
-# Custom token budget
-engram recall "query" -b 2000
-
-# Get specific memory by ID
-engram get 42
+engram recall "query"                    # Full context (4000 tokens)
+engram recall "query" --short            # Compact preview
+engram recall "query" -t reflex          # Filter by type
+engram recall "query" -b 2000            # Custom budget
 ```
 
-### What `recall` does automatically:
-1. Hybrid search (semantic + FTS5, fused via Reciprocal Rank Fusion)
-2. Cross-encoder reranking for precision
-3. 1-hop graph expansion (follows `related_to` links)
-4. Noise filtering (composite score < 0.001 dropped)
-5. Composite scoring: relevance × importance × strength × recency
-6. Token budget fitting (default: 4000 tokens)
-
-## Writing Memories
-
+For advanced search, use `search` directly (see [CLI Reference](references/cli_reference.md)):
 ```bash
-engram add <type> "Title" -c "Full content" -t "tag1,tag2"
-
-# Types: reflex | episode | fact | preference | decision
-
-# Permanent (exempt from decay/pruning):
-engram add preference "User IDE" -c "Uses Antigravity IDE" --permanent
-
-# Auto-linking is ON by default. Disable (rare):
-engram add fact "Note" -c "..." --no-auto-link
+engram search "query" --rerank --hops 2  # Graph-aware + reranked
+engram search "query" --since 1d -m fts  # Today, exact keywords
 ```
 
-### Memory Types
+## Writing Memories — Save Proactively
 
-| Type         | When                                   |  Permanent?   |
-| ------------ | -------------------------------------- | :-----------: |
-| `reflex`     | "If X → do Y" rules, gotchas           | ✅ recommended |
-| `episode`    | Problem: trigger → cause → solution    |       —       |
-| `fact`       | Project info, tech stack, architecture |       —       |
-| `preference` | User prefs, environment, communication | ✅ recommended |
-| `decision`   | Important choices with rationale       |       —       |
-
-## Proactive Memory — Save As You Go
-
-**Don't wait for `/remember`. Save important information proactively during the conversation.** This is the most effective way to build useful memory.
-
-### When to save (do it immediately):
-
-1. **User tells you something about themselves** → `preference` (permanent)
-   ```bash
-   engram add preference "User hardware" -c "i5-14600KF, DDR5 32GB 6400MHz, Windows 11" --permanent
-   ```
-
-2. **You solve a non-trivial bug** → `episode`
-   ```bash
-   engram add episode "Reranker 40s cold start" \
-     -c "Trigger: fresh npm install. Cause: ONNX WASM JIT compilation on first run. Fix: one-time cost, subsequent runs 1.2s." \
-     -t "episode,engram,performance"
-   ```
-
-3. **You discover a gotcha or pattern** → `reflex` (permanent)
-   ```bash
-   engram add reflex "Commander postAction hook ordering" \
-     -c "Register program.hook('postAction', ...) BEFORE program.parse(), not after." \
-     -t "reflex,nodejs,commander" --permanent
-   ```
-
-4. **Project architecture is established** → `fact`
-   ```bash
-   engram add fact "Engram architecture" \
-     -c "Stack: Node.js, LibSQL/SQLite, BGE-M3, Commander CLI. Portable skill folder." \
-     -t "fact,engram,architecture"
-   ```
-
-5. **Important decision is made** → `decision`
-   ```bash
-   engram add decision "Use LibSQL over PostgreSQL" \
-     -c "Reason: zero infra, single-file DB, portable, DiskANN vector index built-in." \
-     -t "decision,engram,database"
-   ```
-
-### Efficiency rules:
-
-- **Use batch ingest** for 3+ memories — one model load instead of N
-- **Title = searchable summary**: make titles that you'd want to find later
-- **Content = full context**: include trigger, cause, solution, prevention
-- **Tags = categories**: use consistent tags for filtering (`project-name`, `tech`, type)
-- **Check before saving**: `engram recall "topic"` to avoid duplicates
-- **Mark permanent** for reflexes and preferences — they must never decay
-
-## Batch Ingest (preferred for 3+ memories)
-
-Save multiple memories in **one call** — model loads once, 4x faster:
+**Don't wait for `/remember`. Save important information immediately during the conversation.**
 
 ```bash
-# From file (recommended for large batches):
+engram add <type> "Title" -c "Content" -t "tags" [--permanent]
+```
+
+### When to Save
+
+| Trigger                           | Type         | Permanent? |
+| --------------------------------- | ------------ | :--------: |
+| User reveals a preference         | `preference` |     ✅      |
+| You solve a non-trivial bug       | `episode`    |     —      |
+| You discover a gotcha or pattern  | `reflex`     |     ✅      |
+| Project architecture established  | `fact`       |     —      |
+| Important decision with rationale | `decision`   |     —      |
+
+### Examples
+
+```bash
+# Reflex (permanent)
+engram add reflex "NPE in LibSQL vector index" \
+  -c "If vector index not ready, vector_top_k throws. Always wrap in try/catch with fallback." \
+  -t "reflex,libsql,sqlite" --permanent
+
+# Episode
+engram add episode "Boost test failure in Engram" \
+  -c "Trigger: test isolation. Cause: clearTables didn't reset system_meta. Fix: DELETE last_consolidation_at." \
+  -t "episode,engram,testing"
+
+# Preference (permanent)
+engram add preference "User hardware" \
+  -c "i5-14600KF, DDR5 32GB 6400MHz, Windows 11" --permanent
+```
+
+### Batch Ingest (3+ memories → use this)
+
+One model load for the entire batch — **4x faster** than individual adds.
+
+```bash
 engram ingest --file memories.json
-
-# From stdin:
-echo '[{"type":"reflex","title":"...","content":"..."}]' | engram ingest
-
-# Direct argument (short batches):
-engram ingest '[{"type":"fact","title":"Test","content":"..."}]'
 ```
 
-JSON format:
 ```json
 [
   {"type": "reflex", "title": "...", "content": "...", "tags": ["a","b"], "permanent": true},
@@ -159,80 +100,85 @@ JSON format:
 ]
 ```
 
-Fields: `type` (required), `title` (required), `content`, `tags` (array or comma-string), `permanent` (bool), `importance` (0-1).
+### Efficiency Rules
+
+- **Title = searchable summary** — write titles you'd want to find later
+- **Content = full context** — include trigger, cause, solution, prevention
+- **Tags = consistent categories** — project name, technology, type
+- **Check before saving:** `engram recall "topic" --short` to avoid duplicates
+- **Mark permanent** for reflexes and preferences — they must never decay
+
+## Knowledge Graph
+
+Auto-linking is ON by default — every `add` discovers and links related memories via cosine similarity. To build richer graph manually:
+
+```bash
+engram link <sourceId> <targetId> -r <relation>
+```
+
+Relations: `related_to` | `caused_by` | `evolved_from` | `contradicts` | `supersedes`
+
+Graph links power multi-hop retrieval in `recall` and `search --hops N`.
+
+> **Deep dive:** See [Effective Usage Guide → Knowledge Graph Patterns](references/effective_usage.md#knowledge-graph-patterns)
 
 ## /remember Workflow
 
 When the user says `/remember` or `запомни`:
 
 1. **Analyze** conversation for new reflexes, episodes, facts, preferences, decisions
-2. **Check** existing memories: `engram recall "topic"` to avoid duplicates
-3. **Write** memories via `engram ingest --file <tmp>.json` (batch) or individual `engram add`
+2. **Check** existing memories: `engram recall "topic" --short` for each area
+3. **Write** via `engram ingest --file <tmp>.json` (batch preferred)
 4. **Confirm** to the user briefly what was saved
 
-## Full CLI Reference
+## Session Management
+
+Sessions track which memories were accessed during a conversation. They power access-based analytics and consolidation boost.
+
+```bash
+engram session start <id> [-t title]     # Start (also checks if sleep needed)
+engram session end <id> [-s summary]     # End with summary
+engram session list [-n limit]           # List recent sessions
+```
+
+> **Deep dive:** See [Effective Usage Guide → Session Lifecycle](references/effective_usage.md#session-lifecycle)
+
+## Maintenance
+
+### Consolidation (Sleep)
+```bash
+engram sleep --dry-run    # Preview
+engram sleep              # Execute: decay, prune, merge, boost
+```
+
+Consolidation is **idempotent** — safe to run multiple times. Permanent memories are exempt from decay and pruning.
+
+### Health Checks
+```bash
+engram stats              # Overview
+engram diagnostics        # Weakest memories + duplicate candidates
+```
 
 ### CRUD
-
 ```bash
-# Get memory by ID
-engram get <id>
-
-# Delete memory
-engram delete <id>
-
-# Export all memories
-engram export                   # JSON to stdout
-engram export -f md             # Markdown format
-engram export -o backup.json    # Write to file
+engram get <id>                                    # View full memory
+engram update <id> --title "New" --content "..."   # Edit memory
+engram delete <id>                                 # Remove memory
+engram tag add <id> <tag>                          # Add tag
+engram tag remove <id> <tag>                       # Remove tag
+engram mark <id>                                   # Toggle permanent
+engram export [-f md] [-o file.json]               # Export all
 ```
-
-### Tags
-
-```bash
-engram tag add <memoryId> <tagName>
-engram tag remove <memoryId> <tagName>
-engram tag list                 # all tags with counts
-```
-
-### Management
-
-```bash
-engram mark <id>                # toggle permanent
-engram mark <id> --remove       # remove permanent
-engram link <sourceId> <targetId> [-r relation]  # link memories
-engram stats                    # statistics
-engram diagnostics              # weakest memories, duplicate candidates
-engram diagnostics --dup-threshold 0.85  # custom similarity threshold
-```
-
-### Consolidation
-
-```bash
-engram sleep                    # full consolidation
-engram sleep --dry-run          # preview without changes
-engram sleep --decay-rate 0.90  # custom decay
-engram sleep --prune 0.10       # custom prune threshold
-```
-
-### Sessions
-
-```bash
-engram session start <id> [-t title]  # start session
-engram session end <id> [-s summary]  # end session
-engram session list [-n limit]        # list sessions
-```
-
-### Consolidation Safety
-
-Consolidation is **idempotent** — running it twice in a row is safe:
-- **Decay** uses `last_consolidation_at` as reference, not absolute timestamps
-- **Boost** has a ≥1 day cooldown guard
-- **Merge** only acts on non-archived memories
-- **Extract** *(not yet implemented)* — planned LLM-based pattern discovery
 
 ## Environment
 
 | Variable         | Effect                                               |
 | ---------------- | ---------------------------------------------------- |
 | `ENGRAM_TRACE=1` | Diagnostic logging to stderr (model loading, timing) |
+
+## Full Reference
+
+For complete command syntax, all options, usage patterns, and anti-patterns:
+
+- 📖 **[CLI Reference](references/cli_reference.md)** — every command with all options and examples
+- 🧠 **[Effective Usage Guide](references/effective_usage.md)** — session lifecycle, search strategy, graph patterns, consolidation, decision trees

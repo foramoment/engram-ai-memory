@@ -1,0 +1,55 @@
+[
+  {
+    "type": "reflex",
+    "title": "Silent catch {} blocks hide bugs",
+    "content": "NEVER use bare catch {} — always trace-log the error. In Engram audit, 3 silent catches in memory.js hid vector index initialization failures and auto-link errors. Fix: catch (/** @type {any} */ err) { trace('[context]:', err?.message || String(err)); }",
+    "tags": ["reflex", "javascript", "error-handling", "engram"],
+    "permanent": true
+  },
+  {
+    "type": "reflex",
+    "title": "Test isolation requires clearing ALL state tables",
+    "content": "When test suites share a DB, clearTables() must reset metadata/config tables too (like system_meta), not just data tables. In Engram, the boost test failed because previous test wrote last_consolidation_at — the idempotency guard then skipped boost entirely. Fix: DELETE FROM system_meta WHERE key = 'last_consolidation_at'.",
+    "tags": ["reflex", "testing", "test-isolation", "engram"],
+    "permanent": true
+  },
+  {
+    "type": "reflex",
+    "title": "Brute-force fallback must replicate all preprocessing",
+    "content": "When a fallback path exists (e.g. brute-force search when vector index fails), it MUST replicate ALL preprocessing from the primary path. In Engram, searchSemantic called parseSince() for the vector path but the brute-force fallback used raw 'since' string like '1d' directly in SQL — temporal filter was completely broken. Fix: normalize inputs before branching, or ensure both paths apply the same transforms.",
+    "tags": ["reflex", "search", "architecture", "engram"],
+    "permanent": true
+  },
+  {
+    "type": "reflex",
+    "title": "N+1 pattern in tag/label batch operations",
+    "content": "When applying N tags/labels: DON'T loop with SELECT id + INSERT per tag. DO: (1) batch INSERT OR IGNORE all names, (2) single SELECT ... WHERE name IN (...) to get all IDs, (3) batch INSERT OR IGNORE all links. Reduces from 2N+1 queries to 3 queries regardless of N.",
+    "tags": ["reflex", "sql", "performance", "n-plus-one"],
+    "permanent": true
+  },
+  {
+    "type": "episode",
+    "title": "Engram comprehensive audit — 3 bugs, 2 optimizations, 4 tests",
+    "content": "Trigger: Fresh-eyes audit of Engram codebase. Found: (1) Boost test failing due to stale system_meta, (2) parseSince not called in brute-force fallback, (3) consolidation MAX(1,...) preventing decay for recent memories, (4) applyTags N+1 pattern, (5) getDuplicateCandidates O(n²) without limit. Added: CLI update command, FoA logAccess, exportMemories+findRelated tests. Result: 114/114 tests pass. Commit: 79dd878.",
+    "tags": ["episode", "engram", "audit", "code-review"],
+    "importance": 0.8
+  },
+  {
+    "type": "decision",
+    "title": "applyTags refactored from N+1 to 3 batch queries",
+    "content": "Old: batch upsert tags, then for-loop with SELECT id + INSERT per tag (2N queries). New: (1) batch upsert tag names, (2) single SELECT ... WHERE name IN (...), (3) batch INSERT OR IGNORE links. Reason: scalability — 10 tags now takes 3 queries instead of 21.",
+    "tags": ["decision", "engram", "performance", "sql"]
+  },
+  {
+    "type": "fact",
+    "title": "Engram test suite structure and coverage",
+    "content": "114 tests across 4 files: memory.test.js (CRUD, search, tags, links, stats, export, findRelated), session_foa_consolidation.test.js (sessions, FoA, consolidation), enhancements.test.js (F022-F026: auto-link, multi-hop, temporal, batch, permanent), migrate.test.js (parsers + integration). Run: npm test in SKILLS/engram. All tests use node:test + assert/strict with real LibSQL DB.",
+    "tags": ["fact", "engram", "testing"]
+  },
+  {
+    "type": "fact",
+    "title": "Engram CLI commands reference",
+    "content": "Commands: add, search, recall, get, update (NEW), delete, link, tag (add/remove/list), mark (permanent toggle), session (start/end/list), stats, diagnostics, sleep (consolidation), export, migrate, ingest. The 'update' command was added during audit — engram update <id> --title --content --importance --type.",
+    "tags": ["fact", "engram", "cli"]
+  }
+]
