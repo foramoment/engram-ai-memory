@@ -7,6 +7,9 @@ import { mkdirSync, existsSync } from "node:fs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DB_PATH = resolve(__dirname, "..", "data", "engram.db");
 
+/** Write diagnostic output to stderr, only when ENGRAM_TRACE=1 */
+const trace = (...args) => process.env.ENGRAM_TRACE === "1" && process.stderr.write(args.join(" ") + "\n");
+
 /** @type {import("@libsql/client").Client | null} */
 let _client = null;
 
@@ -188,7 +191,7 @@ async function tryCreateVectorIndex(client) {
     );
     return true;
   } catch (err) {
-    console.warn("[engram] Vector index creation failed (brute-force fallback will be used):", err.message);
+    trace("[engram] Vector index creation failed (brute-force fallback will be used):", err.message);
     return false;
   }
 }
@@ -204,7 +207,7 @@ export async function runMigrations(client) {
   try {
     const result = await client.execute("SELECT value FROM system_meta WHERE key = 'schema_version'");
     if (result.rows.length > 0) {
-      currentVersion = parseInt(/** @type {string} */ (result.rows[0].value), 10);
+      currentVersion = parseInt(/** @type {string} */(result.rows[0].value), 10);
     }
   } catch {
     // Table doesn't exist yet — version 0
@@ -213,7 +216,7 @@ export async function runMigrations(client) {
   let migrated = false;
   for (const migration of MIGRATIONS) {
     if (migration.version > currentVersion) {
-      console.log(`[engram] Running migration v${migration.version}: ${migration.description}`);
+      trace(`[engram] Running migration v${migration.version}: ${migration.description}`);
       for (const sql of migration.statements) {
         await client.execute(sql);
       }

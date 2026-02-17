@@ -392,6 +392,20 @@
             ],
             "passes": true,
             "notes": "Permanent tag excludes from stepDecay and stepPrune"
+        },
+        {
+            "id": "F027",
+            "category": "ux",
+            "priority": "high",
+            "description": "Smart defaults: autoLink=true, recall with rerank+hops, --permanent flag",
+            "steps": [
+                "autoLink default true in addMemory",
+                "recall uses rerank=true hops=1",
+                "--permanent flag in add",
+                "Tests pass"
+            ],
+            "passes": true,
+            "notes": "autoLink=true default, recall rerank+hops, --permanent flag"
         }
     ]
 }

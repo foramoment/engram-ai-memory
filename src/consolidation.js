@@ -9,6 +9,9 @@
  */
 
 import { embed, cosineSimilarity, vectorToBlob, blobToVector } from "./embeddings.js";
+
+/** Write diagnostic output to stderr, only when ENGRAM_TRACE=1 */
+const trace = (...args) => process.env.ENGRAM_TRACE === "1" && process.stderr.write(args.join(" ") + "\n");
 import { getMeta, setMeta } from "./db.js";
 
 /**
@@ -57,19 +60,19 @@ export async function runConsolidation(client, options = {}) {
         dryRun = false,
     } = options;
 
-    console.log("[engram] 💤 Starting sleep consolidation...");
+    trace("[engram] 💤 Starting sleep consolidation...");
 
     // Step 1: Decay
     const decayed = await stepDecay(client, decayRate, dryRun);
-    console.log(`[engram]   Decay: ${decayed} memories affected`);
+    trace(`[engram]   Decay: ${decayed} memories affected`);
 
     // Step 2: Prune
     const pruned = await stepPrune(client, pruneThreshold, dryRun);
-    console.log(`[engram]   Prune: ${pruned} memories archived`);
+    trace(`[engram]   Prune: ${pruned} memories archived`);
 
     // Step 3: Merge
     const merged = await stepMerge(client, mergeThreshold, dryRun);
-    console.log(`[engram]   Merge: ${merged} duplicates merged`);
+    trace(`[engram]   Merge: ${merged} duplicates merged`);
 
     // Step 4: Extract (placeholder — requires LLM)
     /** @type {string[]} */
@@ -78,7 +81,7 @@ export async function runConsolidation(client, options = {}) {
 
     // Step 5: Boost
     const boosted = await stepBoost(client, boostFactor, boostMinAccess, dryRun);
-    console.log(`[engram]   Boost: ${boosted} memories strengthened`);
+    trace(`[engram]   Boost: ${boosted} memories strengthened`);
 
     // Update last consolidation timestamp
     if (!dryRun) {
@@ -86,7 +89,7 @@ export async function runConsolidation(client, options = {}) {
     }
 
     const elapsed_ms = Date.now() - startTime;
-    console.log(`[engram] 💤 Consolidation complete in ${elapsed_ms}ms`);
+    trace(`[engram] 💤 Consolidation complete in ${elapsed_ms}ms`);
 
     return { decayed, pruned, merged, boosted, patterns, elapsed_ms };
 }

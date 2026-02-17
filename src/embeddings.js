@@ -8,6 +8,9 @@
  * BGE-M3: 100+ languages, 1024-dim vectors, 8192 token context.
  */
 
+/** Write diagnostic output to stderr, only when ENGRAM_TRACE=1 */
+const trace = (...args) => process.env.ENGRAM_TRACE === "1" && process.stderr.write(args.join(" ") + "\n");
+
 const MODEL_ID = "Xenova/bge-m3";
 const EMBEDDING_DIM = 1024;
 
@@ -32,7 +35,7 @@ async function detectDevice() {
         if (typeof navigator !== "undefined" && navigator.gpu) {
             const adapter = await navigator.gpu.requestAdapter();
             if (adapter) {
-                console.log("[engram] WebGPU available:", (await adapter.requestAdapterInfo()).description);
+                trace("[engram] WebGPU available:", (await adapter.requestAdapterInfo()).description);
                 return "webgpu";
             }
         }
@@ -58,7 +61,7 @@ export async function initEmbeddings(options = {}) {
     _device = options.device || await detectDevice();
     const modelId = options.modelId || MODEL_ID;
 
-    console.log(`[engram] Loading embedding model: ${modelId} (device: ${_device})`);
+    trace(`[engram] Loading embedding model: ${modelId} (device: ${_device})`);
     const startTime = Date.now();
 
     _pipeline = await pipeline("feature-extraction", modelId, {
@@ -67,7 +70,7 @@ export async function initEmbeddings(options = {}) {
     });
 
     const elapsed = Date.now() - startTime;
-    console.log(`[engram] Model loaded in ${elapsed}ms`);
+    trace(`[engram] Model loaded in ${elapsed}ms`);
 
     _initialized = true;
 }
@@ -216,14 +219,14 @@ export async function initReranker() {
 
     const { AutoTokenizer, AutoModelForSequenceClassification } = await import("@huggingface/transformers");
 
-    console.log(`[engram] Loading reranker model: ${RERANKER_MODEL_ID}`);
+    trace(`[engram] Loading reranker model: ${RERANKER_MODEL_ID}`);
     const startTime = Date.now();
 
     _rerankerTokenizer = await AutoTokenizer.from_pretrained(RERANKER_MODEL_ID);
-    _rerankerModel = await AutoModelForSequenceClassification.from_pretrained(RERANKER_MODEL_ID);
+    _rerankerModel = await AutoModelForSequenceClassification.from_pretrained(RERANKER_MODEL_ID, { dtype: "fp32" });
 
     const elapsed = Date.now() - startTime;
-    console.log(`[engram] Reranker loaded in ${elapsed}ms`);
+    trace(`[engram] Reranker loaded in ${elapsed}ms`);
     _rerankerInitialized = true;
 }
 

@@ -6,6 +6,9 @@
 import { embed, vectorToBlob } from "./embeddings.js";
 import { shouldConsolidate, runConsolidation } from "./consolidation.js";
 
+/** Write diagnostic output to stderr, only when ENGRAM_TRACE=1 */
+const trace = (...args) => process.env.ENGRAM_TRACE === "1" && process.stderr.write(args.join(" ") + "\n");
+
 /**
  * Start a new session.
  * @param {import("@libsql/client").Client} client
@@ -154,11 +157,11 @@ export async function startSessionWithConsolidationCheck(client, sessionId, opti
 
     let autoRan = false;
     if (shouldRun && autoConsolidate) {
-        console.log(`[engram] 💤 Auto-consolidation triggered (${daysSinceLast === null ? "never run" : daysSinceLast.toFixed(1) + " days ago"})`);
+        trace(`[engram] 💤 Auto-consolidation triggered (${daysSinceLast === null ? "never run" : daysSinceLast.toFixed(1) + " days ago"})`);
         await runConsolidation(client);
         autoRan = true;
     } else if (shouldRun) {
-        console.log(`[engram] 💡 Consolidation suggested — ${daysSinceLast === null ? "never run" : daysSinceLast.toFixed(1) + " days since last run"}`);
+        trace(`[engram] 💡 Consolidation suggested — ${daysSinceLast === null ? "never run" : daysSinceLast.toFixed(1) + " days since last run"}`);
     }
 
     return { consolidationNeeded: shouldRun, daysSinceLast, autoRan };

@@ -15,7 +15,7 @@ import { embed, cosineSimilarity, vectorToBlob, blobToVector, getEmbeddingDim, r
  * @property {Array<{targetId: number, relation: string}>} [links] - Links to create
  * @property {string} [sourceConversationId]
  * @property {'manual' | 'auto' | 'migration'} [sourceType]
- * @property {boolean} [autoLink]           - Auto-discover and link related memories (default false)
+ * @property {boolean} [autoLink]           - Auto-discover and link related memories (default true)
  * @property {number} [autoLinkThreshold]   - Cosine similarity threshold for auto-linking (default 0.7)
  */
 
@@ -53,7 +53,7 @@ export async function addMemory(client, input) {
         links = [],
         sourceConversationId = null,
         sourceType = "manual",
-        autoLink = false,
+        autoLink = true,
         autoLinkThreshold = 0.7,
     } = input;
 

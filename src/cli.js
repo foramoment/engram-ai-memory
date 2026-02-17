@@ -36,16 +36,19 @@ program
     .option("-c, --content <text>", "Memory content (or pipe via stdin)")
     .option("-t, --tags <tags>", "Comma-separated tags")
     .option("-i, --importance <n>", "Importance 0.0-1.0", "0.5")
-    .option("--auto-link", "Auto-discover and link related memories")
+    .option("--no-auto-link", "Disable auto-linking of related memories")
+    .option("--permanent", "Mark as permanent (exempt from decay/prune)")
     .action(async (type, title, opts) => {
         const { client } = await initDb();
         const content = opts.content || title;
         const tags = opts.tags ? opts.tags.split(",").map((t) => t.trim()) : [];
+        if (opts.permanent && !tags.includes("permanent")) tags.push("permanent");
         const importance = parseFloat(opts.importance);
 
-        const id = await addMemory(client, { type, title, content, tags, importance, autoLink: opts.autoLink || false });
+        const id = await addMemory(client, { type, title, content, tags, importance, autoLink: opts.autoLink !== false });
         console.log(`✅ Memory #${id} created [${type}] "${title}"`);
         if (tags.length) console.log(`   Tags: ${tags.join(", ")}`);
+        if (opts.permanent) console.log(`   🔒 Permanent (exempt from decay/prune)`);
         await closeDb();
     });
 
@@ -103,7 +106,7 @@ program
     .option("-b, --budget <n>", "Token budget", "4000")
     .option("-t, --type <type>", "Filter by memory type")
     .option("-s, --session <id>", "Include session context")
-    .option("--raw", "Output raw text block for agent consumption")
+    .option("--short", "Compact preview (truncated content)")
     .action(async (query, opts) => {
         const { client } = await initDb();
         const result = await recall(client, query, {
@@ -112,9 +115,8 @@ program
             sessionId: opts.session,
         });
 
-        if (opts.raw) {
-            console.log(formatRecallContext(result));
-        } else {
+        if (opts.short) {
+            // Compact preview for quick human scanning
             console.log(`\n🎯 Focus of Attention (~${result.totalTokensEstimate} tokens):\n`);
             if (result.sessionContext) {
                 console.log(`📋 Session: ${result.sessionContext.substring(0, 200)}`);
@@ -125,6 +127,9 @@ program
                 console.log(`    ${mem.content.substring(0, 120)}${mem.content.length > 120 ? "..." : ""}`);
                 console.log();
             }
+        } else {
+            // Default: full markdown — optimal for agent consumption
+            console.log(formatRecallContext(result));
         }
         await closeDb();
     });
@@ -450,5 +455,11 @@ program
         console.log();
         await closeDb();
     });
+
+// Force exit after all commands complete — transformers.js worker threads
+// keep the process alive otherwise, causing a hang after output is printed.
+program.hook("postAction", () => {
+    setTimeout(() => process.exit(0), 50);
+});
 
 program.parse();

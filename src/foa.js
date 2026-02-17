@@ -15,7 +15,8 @@ import { getSessionContext } from "./session.js";
  * @property {number} [budget]        - Approximate token budget (default 4000)
  * @property {string} [type]          - Filter by memory type
  * @property {string} [sessionId]     - Include session context
- * @property {boolean} [includeGraph] - Include linked memories (default true)
+ * @property {boolean} [rerank]       - Re-score with cross-encoder (default true)
+ * @property {number} [hops]          - Follow graph links N hops deep (default 1)
  */
 
 /**
@@ -49,10 +50,12 @@ export async function recall(client, query, options = {}) {
         budget = 4000,
         type,
         sessionId,
+        rerank = true,
+        hops = 1,
     } = options;
 
-    // 1. Hybrid search
-    const searchResults = await searchHybrid(client, query, { k, type });
+    // 1. Hybrid search — recall is the "smart" command: rerank + hops by default
+    const searchResults = await searchHybrid(client, query, { k, type, rerank, hops });
 
     // 2. Score and rank: relevance × importance × strength × recency
     const now = Date.now();
@@ -75,11 +78,14 @@ export async function recall(client, query, options = {}) {
     // Sort by composite score (descending)
     scored.sort((a, b) => b.score - a.score);
 
-    // 3. Apply token budget
+    // 3. Apply token budget with relevance floor
+    // Drop low-relevance noise; keep hop-linked memories (score=-1 sentinel)
+    const MIN_SCORE = 0.001;
     let tokenCount = 0;
     const memories = [];
 
     for (const mem of scored) {
+        if (mem.score >= 0 && mem.score < MIN_SCORE) continue; // noise gate
         const memTokens = estimateTokens(`[${mem.type}] ${mem.title}\n${mem.content}`);
         if (tokenCount + memTokens > budget && memories.length > 0) break;
         memories.push({
