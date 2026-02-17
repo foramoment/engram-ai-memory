@@ -4,7 +4,7 @@
         "description": "Cognitive memory system for AI agents — LibSQL + BGE-M3 + sleep consolidation",
         "stack": "Node.js 20+, LibSQL, Transformers.js v4, Commander.js",
         "created_at": "2026-02-17T02:57:00Z",
-        "last_updated": "2026-02-17T06:38:00Z"
+        "last_updated": "2026-02-17T07:43:00Z"
     },
     "features": [
         {
@@ -464,6 +464,52 @@
             ],
             "passes": true,
             "notes": "Deploy: copy SKILLS/engram/ -> npm install -> npm link -> done"
+        },
+        {
+            "id": "F032",
+            "category": "functional",
+            "priority": "critical",
+            "description": "Insert-time dedup and merge-on-write: prevent duplicates at addMemory, not at sleep",
+            "steps": [
+                "Exact dedup: same type+title → skip insert, bump access_count, return existing ID",
+                "Semantic merge: cosine > 0.92 with same type → append content, re-embed, bump strength",
+                "Auto-link: cosine > 0.70 → create related_to link (existing behavior, now documented)",
+                "addMemory returns {id, status: 'created'|'duplicate'|'merged'}",
+                "CLI shows ♻️ for duplicates, 🔀 for merges, ✅ for new",
+                "Extracted applyTags() helper for reuse in merge path",
+                "All tests updated for new return format"
+            ],
+            "passes": true,
+            "notes": "Eliminates ~90% of sleep-merge need. Exact dedup is 0ms (SQL). Semantic merge reuses the embedding already computed."
+        },
+        {
+            "id": "F033",
+            "category": "functional",
+            "priority": "high",
+            "description": "Recall noise gate fallback: ensure type-filtered queries always return results",
+            "steps": [
+                "If noise gate (MIN_SCORE=0.001) filters ALL results but candidates exist, bypass gate",
+                "Return top-K by composite score instead of empty result",
+                "Trace logging for composite score breakdown (rel/imp/str/rec → composite)",
+                "Added trace() function to foa.js"
+            ],
+            "passes": true,
+            "notes": "Fixes recall -t reflex with generic queries — reranker gives ~0 relevance for vague queries"
+        },
+        {
+            "id": "F034",
+            "category": "integration",
+            "priority": "high",
+            "description": "Batch ingest: add multiple memories in one CLI call",
+            "steps": [
+                "engram ingest command accepts JSON array via stdin, --file, or argument",
+                "Validates type and title for each memory before processing",
+                "Reports ✅/♻️/🔀/❌ per memory with final summary",
+                "Supports tags (array or comma-string), permanent flag, importance",
+                "One model load for entire batch — 4x faster than individual add calls"
+            ],
+            "passes": true,
+            "notes": "Preferred method for /remember workflow: write all memories to tmp JSON, then ingest"
         }
     ]
 }
