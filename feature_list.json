@@ -248,8 +248,8 @@
                 "Session end: engram session end + conditional sleep",
                 "Manual testing in Antigravity works"
             ],
-            "passes": false,
-            "notes": "Deprioritized — implement last after everything is tested"
+            "passes": true,
+            "notes": "SKILL.md rewritten with Engram CLI integration + markdown backward compat"
         },
         {
             "id": "F017",
