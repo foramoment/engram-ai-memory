@@ -6,10 +6,19 @@
  * falls back to WASM/CPU otherwise.
  *
  * BGE-M3: 100+ languages, 1024-dim vectors, 8192 token context.
+ * Models quantized to INT8 for 75% less disk and ~2.5x faster inference.
  */
+
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** Write diagnostic output to stderr, only when ENGRAM_TRACE=1 */
 const trace = (...args) => process.env.ENGRAM_TRACE === "1" && process.stderr.write(args.join(" ") + "\n");
+
+/** Model cache dir — outside node_modules for persistence across npm installs */
+const CACHE_DIR = join(__dirname, "..", "data", "models");
 
 const MODEL_ID = "Xenova/bge-m3";
 const EMBEDDING_DIM = 1024;
@@ -56,7 +65,8 @@ async function detectDevice() {
 export async function initEmbeddings(options = {}) {
     if (_initialized && _pipeline) return;
 
-    const { pipeline } = await import("@huggingface/transformers");
+    const { pipeline, env } = await import("@huggingface/transformers");
+    env.cacheDir = CACHE_DIR;
 
     _device = options.device || await detectDevice();
     const modelId = options.modelId || MODEL_ID;
@@ -65,7 +75,7 @@ export async function initEmbeddings(options = {}) {
     const startTime = Date.now();
 
     _pipeline = await pipeline("feature-extraction", modelId, {
-        dtype: "fp32",
+        dtype: "int8",
         device: _device,
     });
 
@@ -217,13 +227,14 @@ let _rerankerInitialized = false;
 export async function initReranker() {
     if (_rerankerInitialized && _rerankerModel) return;
 
-    const { AutoTokenizer, AutoModelForSequenceClassification } = await import("@huggingface/transformers");
+    const { AutoTokenizer, AutoModelForSequenceClassification, env } = await import("@huggingface/transformers");
+    env.cacheDir = CACHE_DIR;
 
     trace(`[engram] Loading reranker model: ${RERANKER_MODEL_ID}`);
     const startTime = Date.now();
 
     _rerankerTokenizer = await AutoTokenizer.from_pretrained(RERANKER_MODEL_ID);
-    _rerankerModel = await AutoModelForSequenceClassification.from_pretrained(RERANKER_MODEL_ID, { dtype: "fp32" });
+    _rerankerModel = await AutoModelForSequenceClassification.from_pretrained(RERANKER_MODEL_ID, { dtype: "int8" });
 
     const elapsed = Date.now() - startTime;
     trace(`[engram] Reranker loaded in ${elapsed}ms`);

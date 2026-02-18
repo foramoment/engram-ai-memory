@@ -12,6 +12,10 @@ node_modules/
 
 # Model cache (downloaded on first run)
 .models/
+**/data/models/
+
+# Benchmark artifacts
+**/benchmark_results.json
 
 # OS
 Thumbs.db
