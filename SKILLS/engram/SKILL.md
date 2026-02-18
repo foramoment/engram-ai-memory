@@ -16,21 +16,32 @@ npm install
 npm link
 ```
 
-## Session Start — Auto-Load
+## Session Start — Adaptive Context Loading
 
-At the beginning of each conversation, **silently run**:
+At the beginning of each conversation, **silently load relevant context** using your own judgment. Do NOT run the legacy script. Instead:
 
-```powershell
-& "<this-skill-folder>\scripts\session-start.ps1"
-```
-
-Or manually recall what you need:
+1. **Read the environment** — workspace path, open files, file extensions, the user's first message.
+2. **Determine what you need** — which projects, languages, patterns, preferences are relevant right now.
+3. **Make 1–3 targeted `recall` calls** with precise queries and tight budgets:
 
 ```bash
-engram recall "current user projects and preferences"
+# Examples of GOOD targeted recalls:
+engram recall "auth API rate limiting nodejs" -b 1500                # project-specific
+engram recall "user preferences communication" -t preference -b 600  # always small
+engram recall "react state management gotchas" -t reflex -b 800      # stack-specific
+
+# BAD — never do this:
+engram recall "reflexes gotchas bug patterns rules" -b 4000    # too vague, wastes budget
 ```
 
+4. **Iterate if needed** — if the first recall reveals you need more context on a specific topic, do another targeted recall. This is better than loading everything upfront.
+5. **If a structured task file is detected** (e.g. a task list, feature tracker, or project spec in the workspace) — read the current task and recall context relevant to it.
+
+**Budget guideline:** aim for ~2000–3000 total tokens of memory context. Less is better if it's precise.
+
 **Do NOT announce that you are loading memories. Use the context naturally.**
+
+> **Fallback for weaker models:** the legacy script `scripts/session-start.ps1` still works but loads static, non-adaptive context.
 
 ## Reading Memories — Always Use `recall`
 
@@ -81,8 +92,8 @@ engram add episode "Boost test failure in Engram" \
   -t "episode,engram,testing"
 
 # Preference (permanent)
-engram add preference "User hardware" \
-  -c "i5-14600KF, DDR5 32GB 6400MHz, Windows 11" --permanent
+engram add preference "User development environment" \
+  -c "OS: macOS, IDE: Cursor, Shell: zsh, prefers TypeScript" --permanent
 ```
 
 ### Batch Ingest (3+ memories → use this)
