@@ -74,13 +74,14 @@ engram recall "debugging tips" -b 2000               # Budget-limited
 engram add <type> <title> [options]
 ```
 
-| Option                 | Description                    | Default |
-| ---------------------- | ------------------------------ | ------- |
-| `-c, --content <text>` | Memory content (or pipe stdin) | title   |
-| `-t, --tags <tags>`    | Comma-separated tags           | none    |
-| `-i, --importance <n>` | Importance 0.0–1.0             | 0.5     |
-| `--no-auto-link`       | Disable auto-linking           | on      |
-| `--permanent`          | Exempt from decay/prune        | off     |
+| Option                  | Description                           | Default |
+| ----------------------- | ------------------------------------- | ------- |
+| `-c, --content <text>`  | Memory content (or pipe stdin)        | title   |
+| `-t, --tags <tags>`     | Comma-separated tags                  | none    |
+| `-i, --importance <n>`  | Importance 0.0–1.0                    | 0.5     |
+| `--no-auto-link`        | Disable auto-linking                  | on      |
+| `--permanent`           | Exempt from decay/prune               | off     |
+| `-l, --link-to <links>` | Link to existing memories (see below) | none    |
 
 **Types:** `reflex`, `episode`, `fact`, `preference`, `decision`
 
@@ -91,6 +92,8 @@ engram add <type> <title> [options]
 
 **Auto-link:** By default, Engram discovers up to 3 semantically similar memories and creates `related_to` links automatically. Override threshold with code-level `autoLinkThreshold` parameter.
 
+**`--link-to` format:** `targetId:relation,targetId:relation,...` — if relation is omitted, defaults to `related_to`.
+
 **Examples:**
 ```bash
 # Reflex (permanent recommended)
@@ -98,10 +101,11 @@ engram add reflex "Commander postAction hook ordering" \
   -c "Register program.hook('postAction', ...) BEFORE program.parse(), not after." \
   -t "reflex,nodejs,commander" --permanent
 
-# Episode
+# Episode linked to existing memories in one command
 engram add episode "Reranker 40s cold start" \
-  -c "Trigger: fresh npm install. Cause: ONNX WASM JIT compilation on first run. Fix: one-time cost, subsequent runs 1.2s." \
-  -t "episode,engram,performance"
+  -c "Trigger: fresh npm install. Cause: ONNX WASM JIT compilation." \
+  -t "episode,engram,performance" \
+  --link-to 42:related_to,38:caused_by
 
 # Fact
 engram add fact "Engram architecture" \
@@ -112,10 +116,10 @@ engram add fact "Engram architecture" \
 engram add preference "User hardware" \
   -c "i5-14600KF, DDR5 32GB, Windows 11" --permanent
 
-# Decision
+# Decision with link (relation defaults to related_to)
 engram add decision "Use LibSQL over PostgreSQL" \
   -c "Reason: zero infra, portable, DiskANN vector index." \
-  -t "decision,engram,database"
+  -t "decision,engram,database" --link-to 10
 ```
 
 ---
@@ -130,10 +134,11 @@ engram ingest --file memories.json    # From file (recommended)
 cat memories.json | engram ingest     # From stdin
 ```
 
-| Option              | Description                                                   |
-| ------------------- | ------------------------------------------------------------- |
-| `-f, --file <path>` | Read JSON from file                                           |
-| `--remove-file`     | Delete source file after successful ingest (only with --file) |
+| Option                  | Description                                                   |
+| ----------------------- | ------------------------------------------------------------- |
+| `-f, --file <path>`     | Read JSON from file                                           |
+| `--remove-file`         | Delete source file after successful ingest (only with --file) |
+| `-l, --link-to <links>` | Link ALL ingested memories to targets (e.g. `133:related_to`) |
 
 **JSON format:**
 ```json
@@ -144,12 +149,20 @@ cat memories.json | engram ingest     # From stdin
     "content": "Full context with trigger, cause, solution",
     "tags": ["tag1", "tag2"],
     "permanent": true,
-    "importance": 0.8
+    "importance": 0.8,
+    "links": [
+      {"target": 133, "relation": "related_to"},
+      {"target": 42, "relation": "evolved_from"}
+    ]
   }
 ]
 ```
 
-Fields: `type` (required), `title` (required), `content`, `tags` (array or comma-string), `permanent` (bool), `importance` (0–1).
+Fields: `type` (required), `title` (required), `content`, `tags` (array or comma-string), `permanent` (bool), `importance` (0–1), `links` (array of `{target, relation}`).
+
+**Linking options (combine both for maximum power):**
+- `--link-to` flag: links ALL ingested memories to the same targets (great for batches on one topic)
+- `links` JSON field: per-memory links (great for precise relationships)
 
 **`--remove-file` behavior:**
 - ✅ Deletes file only when **all** memories ingest successfully
@@ -159,6 +172,10 @@ Fields: `type` (required), `title` (required), `content`, `tags` (array or comma
 **Best practice:** Always use `--remove-file` with `--file` to prevent temp files from being accidentally committed.
 
 ```bash
+# Simple batch with shared link
+engram ingest --file memories.json --remove-file --link-to 133:related_to
+
+# Per-memory links defined in JSON (no flag needed)
 engram ingest --file memories.json --remove-file
 ```
 
@@ -262,7 +279,13 @@ Tags are normalized to lowercase. Duplicate tag assignments are silently ignored
 ### `link` — Graph Links
 
 ```bash
-engram link <sourceId> <targetId> [-r relation]
+engram link <sourceId> <targetIds> [-r relation]
+```
+
+Supports **multiple targets** (comma-separated):
+```bash
+engram link 138 133,134,135 -r related_to   # Link to 3 memories at once
+engram link 50 42 -r evolved_from            # Single target still works
 ```
 
 Valid relations: `related_to` (default), `caused_by`, `evolved_from`, `contradicts`, `supersedes`.

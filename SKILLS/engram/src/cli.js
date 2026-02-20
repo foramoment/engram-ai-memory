@@ -21,6 +21,22 @@ import { runConsolidation, shouldConsolidate, getConsolidationPreview } from "./
 import { getDevice, isInitialized } from "./embeddings.js";
 import { migrateFromSkill } from "./migrate.js";
 
+/**
+ * Parse --link-to format: "133:related_to,134:evolved_from" or "133,134" (defaults to related_to)
+ * @param {string} input
+ * @returns {Array<{target: number, relation: string}>}
+ */
+function parseLinkTo(input) {
+    return input.split(",").map((pair) => {
+        const trimmed = pair.trim();
+        if (trimmed.includes(":")) {
+            const [id, rel] = trimmed.split(":");
+            return { target: parseInt(id), relation: rel || "related_to" };
+        }
+        return { target: parseInt(trimmed), relation: "related_to" };
+    }).filter((l) => !isNaN(l.target));
+}
+
 const program = new Command();
 
 program
@@ -39,6 +55,7 @@ program
     .option("-i, --importance <n>", "Importance 0.0-1.0", "0.5")
     .option("--no-auto-link", "Disable auto-linking of related memories")
     .option("--permanent", "Mark as permanent (exempt from decay/prune)")
+    .option("-l, --link-to <links>", "Link to existing memories: targetId:relation,... (e.g. 133:related_to,134:evolved_from)")
     .action(async (type, title, opts) => {
         const { client } = await initDb();
         const content = opts.content || title;
@@ -56,6 +73,15 @@ program
         }
         if (tags.length) console.log(`   Tags: ${tags.join(", ")}`);
         if (opts.permanent) console.log(`   🔒 Permanent (exempt from decay/prune)`);
+
+        // Process --link-to
+        if (opts.linkTo) {
+            const linkPairs = parseLinkTo(opts.linkTo);
+            for (const { target, relation } of linkPairs) {
+                await linkMemories(client, result.id, target, relation);
+                console.log(`   🔗 → #${target} (${relation})`);
+            }
+        }
         await closeDb();
     });
 
@@ -144,14 +170,18 @@ program
 // -- link --
 program
     .command("link")
-    .description("Link two memories")
+    .description("Link memories (supports multiple targets: engram link 5 1,2,3)")
     .argument("<sourceId>", "Source memory ID")
-    .argument("<targetId>", "Target memory ID")
+    .argument("<targetIds>", "Target memory ID(s), comma-separated (e.g. 133,134,135)")
     .option("-r, --relation <type>", "Relation: related_to | caused_by | evolved_from | contradicts | supersedes", "related_to")
-    .action(async (sourceId, targetId, opts) => {
+    .action(async (sourceId, targetIds, opts) => {
         const { client } = await initDb();
-        await linkMemories(client, parseInt(sourceId), parseInt(targetId), opts.relation);
-        console.log(`🔗 Linked #${sourceId} → #${targetId} (${opts.relation})`);
+        const source = parseInt(sourceId);
+        const targets = targetIds.split(",").map((t) => t.trim()).filter(Boolean).map(Number);
+        for (const target of targets) {
+            await linkMemories(client, source, target, opts.relation);
+            console.log(`🔗 Linked #${source} → #${target} (${opts.relation})`);
+        }
         await closeDb();
     });
 
@@ -508,6 +538,7 @@ program
     .argument("[json]", "JSON array of memories (or use stdin / --file)")
     .option("-f, --file <path>", "Read JSON from file")
     .option("--remove-file", "Delete the source file after successful ingest (only with --file)")
+    .option("-l, --link-to <links>", "Link ALL ingested memories to targets: targetId:relation,... (e.g. 133:related_to)")
     .action(async (jsonArg, opts) => {
         let raw;
         if (opts.file) {
@@ -555,6 +586,9 @@ program
             }
         }
 
+        // Parse global --link-to
+        const globalLinks = opts.linkTo ? parseLinkTo(opts.linkTo) : [];
+
         const { client } = await initDb();
         const results = [];
 
@@ -575,6 +609,15 @@ program
                 results.push({ id: result.id, title: m.title, type: m.type, ok: true, status: result.status });
                 const icon = result.status === "duplicate" ? "♻️" : result.status === "merged" ? "🔀" : "✅";
                 console.log(`  ${icon} #${result.id} [${m.type}] "${m.title}"${result.status !== "created" ? ` (${result.status})` : ""}`);
+
+                // Process per-memory links from JSON
+                const memLinks = Array.isArray(m.links) ? m.links : [];
+                // Combine global --link-to + per-memory links
+                const allLinks = [...globalLinks, ...memLinks.map((l) => ({ target: l.target, relation: l.relation || "related_to" }))];
+                for (const { target, relation } of allLinks) {
+                    await linkMemories(client, result.id, target, relation);
+                    console.log(`   🔗 → #${target} (${relation})`);
+                }
             } catch (e) {
                 results.push({ title: m.title, type: m.type, ok: false, error: e.message });
                 console.error(`  ❌ [${m.type}] "${m.title}" — ${e.message}`);

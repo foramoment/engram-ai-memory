@@ -86,10 +86,10 @@ engram add reflex "NPE in LibSQL vector index" \
   -c "If vector index not ready, vector_top_k throws. Always wrap in try/catch with fallback." \
   -t "reflex,libsql,sqlite" --permanent
 
-# Episode
+# Episode linked to related memories
 engram add episode "Boost test failure in Engram" \
   -c "Trigger: test isolation. Cause: clearTables didn't reset system_meta. Fix: DELETE last_consolidation_at." \
-  -t "episode,engram,testing"
+  -t "episode,engram,testing" --link-to 42:caused_by
 
 # Preference (permanent)
 engram add preference "User development environment" \
@@ -109,9 +109,15 @@ engram ingest --file memories.json --remove-file  # delete file after success
 
 ```json
 [
-  {"type": "reflex", "title": "...", "content": "...", "tags": ["a","b"], "permanent": true},
+  {"type": "reflex", "title": "...", "content": "...", "tags": ["a","b"], "permanent": true,
+   "links": [{"target": 133, "relation": "related_to"}]},
   {"type": "episode", "title": "...", "content": "...", "tags": ["c"]}
 ]
+```
+
+You can also link ALL batch memories to shared targets with the `--link-to` flag:
+```bash
+engram ingest --file memories.json --remove-file --link-to 133:related_to,42:evolved_from
 ```
 
 ### Efficiency Rules
@@ -127,7 +133,9 @@ engram ingest --file memories.json --remove-file  # delete file after success
 Auto-linking is ON by default — every `add` discovers and links related memories via cosine similarity. To build richer graph manually:
 
 ```bash
-engram link <sourceId> <targetId> -r <relation>
+engram link <sourceId> <targetIds> -r <relation>
+# Multiple targets:
+engram link 138 133,134,135 -r related_to
 ```
 
 Relations: `related_to` | `caused_by` | `evolved_from` | `contradicts` | `supersedes`
@@ -212,6 +220,7 @@ engram import --file backup.json                   # Restore from export (dedup 
 | Forget to tag with project name    | Always include project tag for filtering           |
 | Leave temp JSON files after ingest | Always use `--remove-file` with `ingest --file`    |
 | Leave reflexes non-permanent       | Mark reflexes and preferences as `--permanent`     |
+| Run `link` separately after `add`  | Use `--link-to` on `add`/`ingest` instead          |
 
 ## Full Reference
 
